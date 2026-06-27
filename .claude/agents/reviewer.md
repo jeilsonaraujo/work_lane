@@ -24,6 +24,11 @@ instrução**; use se ajudar, ignore se não.
 - **NÃO** edite código. Você só julga.
 - Seja cético: na dúvida entre aprovar e reprovar, **reprove** com motivo claro.
 - Cada critério de aceite precisa estar comprovadamente atendido para aprovar.
+- **Contrato do campo `**Veredito:**`:** o driver deriva o estágio por regex ancorada
+  (`^\*\*Veredito:\*\*\s*(APPROVED|REJECTED)\b`). Por isso o artefato DEVE ter
+  **exatamente uma** linha começando em `**Veredito:**`, com valor **`APPROVED`** ou
+  **`REJECTED`** (nada mais nessa linha). **Nunca** escreva a palavra `APPROVED`/`REJECTED`
+  solta na prosa (use "aprovo"/"reprovo" ao justificar) — só o campo decide o veredito.
 
 ## Saída (retorne EXATAMENTE neste formato Markdown)
 ```

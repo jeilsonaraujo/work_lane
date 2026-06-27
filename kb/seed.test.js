@@ -103,6 +103,68 @@ test('recall --kind doc encontra o doc semeado pelo seed', () => {
   });
 });
 
+test('seed também ingere código-fonte (kind=code): kb/index.js + ao menos um de .claude/', () => {
+  withTempDb((db) => {
+    const res = run(SEED, ['--fake', '--db', db]);
+    assert.equal(res.status, 0, `seed deveria sair 0. stderr=${res.stderr}`);
+
+    const out = JSON.parse(res.stdout);
+    const bySource = new Map(out.seeded.map((s) => [s.source, s]));
+
+    assert.ok(bySource.has('kb/index.js'), 'kb/index.js está entre as sources semeadas');
+    assert.equal(bySource.get('kb/index.js').kind, 'code', 'kb/index.js entra como kind=code');
+    assert.ok(bySource.get('kb/index.js').chunks > 0, 'kb/index.js gerou ao menos 1 chunk');
+
+    assert.ok(bySource.has('kb/seed.mjs'), 'kb/seed.mjs está entre as sources semeadas');
+    assert.equal(bySource.get('kb/seed.mjs').kind, 'code', 'kb/seed.mjs entra como kind=code');
+
+    const claudeCode = out.seeded.filter(
+      (s) => s.kind === 'code' && s.source.startsWith('.claude/')
+    );
+    assert.ok(claudeCode.length > 0, 'ao menos um prompt de .claude/ semeado como code');
+    assert.ok(
+      claudeCode.some((s) => s.source === '.claude/skills/esteira/SKILL.md'),
+      '.claude/skills/esteira/SKILL.md está entre as sources de code'
+    );
+  });
+});
+
+test('recall --kind code por símbolo real encontra kb/index.js', () => {
+  withTempDb((db) => {
+    const seed = run(SEED, ['--fake', '--db', db]);
+    assert.equal(seed.status, 0, `seed deveria sair 0. stderr=${seed.stderr}`);
+
+    const rec = run(RECALL, ['openMemory ingest', '--kind', 'code', '--k', '10', '--fake', '--db', db]);
+    assert.equal(rec.status, 0, `recall deveria sair 0. stderr=${rec.stderr}`);
+
+    const results = JSON.parse(rec.stdout);
+    assert.ok(Array.isArray(results), 'recall retorna array');
+    assert.ok(results.length > 0, 'recall retorna ao menos 1 resultado');
+    for (const r of results) {
+      assert.equal(r.kind, 'code', 'todos os resultados são kind=code');
+    }
+    const sources = new Set(results.map((r) => r.source));
+    assert.ok(sources.has('kb/index.js'), 'kb/index.js está entre as sources retornadas');
+  });
+});
+
+test('seed não inclui node_modules, *.db, *.test.js nem .claude/worktrees/**', () => {
+  withTempDb((db) => {
+    const res = run(SEED, ['--fake', '--db', db]);
+    assert.equal(res.status, 0, `seed deveria sair 0. stderr=${res.stderr}`);
+
+    const out = JSON.parse(res.stdout);
+    for (const { source } of out.seeded) {
+      const segments = source.split('/');
+      assert.ok(!segments.includes('node_modules'), `source não sob node_modules: ${source}`);
+      assert.ok(!segments.includes('.git'), `source não sob .git: ${source}`);
+      assert.ok(!segments.includes('worktrees'), `source não sob worktrees: ${source}`);
+      assert.ok(!source.endsWith('.db'), `source não é *.db: ${source}`);
+      assert.ok(!source.endsWith('.test.js'), `source não é *.test.js: ${source}`);
+    }
+  });
+});
+
 test('deleteBySource remove só a source alvo, sem deixar órfãos', async () => {
   withTempDb(async (db) => {
     const mem = openMemory(db);

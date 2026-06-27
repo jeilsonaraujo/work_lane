@@ -113,3 +113,54 @@ test('recall sem query posicional sai com código != 0 e stderr não-vazio', () 
     assert.ok(res.stderr.trim().length > 0, 'stderr não-vazio');
   });
 });
+
+test('recall --exact (sem --k) retorna o artefato INTEIRO mesmo com >5 chunks', () => {
+  withTempDb((db) => {
+    // Texto longo o bastante p/ > 5 chunks (size=512/step=448): ~5.5k chars ⇒ ~13 chunks.
+    // Crucial: se o CLI aplicasse o antigo default --k=5, isto truncaria em 5 e o
+    // assert results.length === chunks falharia — exatamente o bug reprovado.
+    const spec = 'criterio de aceite do recall hibrido '.repeat(150);
+    const ing = run(
+      INGEST,
+      ['--ticket', 'DIM-29', '--kind', 'spec', '--source', 'spec-1', '--fake', '--db', db],
+      { input: spec }
+    );
+    assert.equal(ing.status, 0, `ingest deveria sair 0. stderr=${ing.stderr}`);
+    const ingOut = JSON.parse(ing.stdout);
+    assert.ok(ingOut.chunks > 5, `spec precisa de >5 chunks p/ provar o fix (got ${ingOut.chunks})`);
+
+    // --exact SEM --k e SEM query posicional → status 0 + array JSON completo.
+    const rec = run(RECALL, ['--exact', '--ticket', 'DIM-29', '--kind', 'spec', '--fake', '--db', db]);
+    assert.equal(rec.status, 0, `recall --exact deveria sair 0. stderr=${rec.stderr}`);
+    const results = JSON.parse(rec.stdout);
+    assert.ok(Array.isArray(results), 'retorna array');
+    assert.equal(results.length, ingOut.chunks, 'traz TODOS os chunks do spec (sem LIMIT 5)');
+    for (let i = 0; i < results.length; i++) {
+      assert.equal(results[i].chunk_index, i, 'ordenado por chunk_index');
+      assert.equal(results[i].ticket_id, 'DIM-29', 'só o ticket alvo');
+      assert.equal(results[i].distance, null, 'sem distância (fetch direto)');
+    }
+  });
+});
+
+test('recall --exact --k N aplica o limite explícito (override continua valendo)', () => {
+  withTempDb((db) => {
+    const spec = 'criterio de aceite do recall hibrido '.repeat(150);
+    const ing = run(
+      INGEST,
+      ['--ticket', 'DIM-29', '--kind', 'spec', '--source', 'spec-1', '--fake', '--db', db],
+      { input: spec }
+    );
+    assert.equal(ing.status, 0, `ingest deveria sair 0. stderr=${ing.stderr}`);
+    const ingOut = JSON.parse(ing.stdout);
+    assert.ok(ingOut.chunks > 3, 'precisa de mais chunks que o limite p/ provar o corte');
+
+    const rec = run(
+      RECALL,
+      ['--exact', '--ticket', 'DIM-29', '--kind', 'spec', '--k', '3', '--fake', '--db', db]
+    );
+    assert.equal(rec.status, 0, `recall --exact --k 3 deveria sair 0. stderr=${rec.stderr}`);
+    const results = JSON.parse(rec.stdout);
+    assert.equal(results.length, 3, '--k 3 limita o fetch a 3 chunks');
+  });
+});

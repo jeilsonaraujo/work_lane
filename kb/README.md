@@ -18,7 +18,7 @@ Stack: **better-sqlite3** + **sqlite-vec** (tabela virtual `vec0`) + embeddings
 | `providers/transformers.js` | provider real (multilíngue, `paraphrase-multilingual-MiniLM-L12-v2`), `import()` lazy do modelo |
 | `chunking.js` | chunking determinístico por tamanho + overlap |
 | `index.js` | `openMemory` / `createMemory` → `ingest`, `ingestBatch`, `query`, `deleteBySource` |
-| `seed.mjs` | CLI que popula a KB com os docs base do repo (`kind=doc`), idempotente |
+| `seed.mjs` | CLI que popula a KB com os docs base (`kind=doc`) **e o código-fonte do repo** (`kind=code`), idempotente |
 | `ingest.mjs` / `recall.mjs` | CLIs finas de escrita/leitura usadas pelo driver da esteira |
 | `e2e_smoke.mjs` | smoke e2e: prova recall+ingest nos dois sentidos (memória no prompt + chunk novo) |
 
@@ -54,7 +54,7 @@ O esquema é fixo em todo o wiring da esteira:
 
 | Tag | Valores | Significado |
 |---|---|---|
-| `kind` | `doc`, `spec`, `worklog`, `review` | tipo do conteúdo: doc do repo ou artefato de uma estação |
+| `kind` | `doc`, `code`, `spec`, `worklog`, `review` | tipo do conteúdo: doc do repo, código-fonte do repo, ou artefato de uma estação |
 | `stage` | `understand`, `execution`, `review`, `sign-off`, `blocked`, ou `null` | estágio que produziu o artefato; `null` para docs do repo |
 | `source` | caminho do arquivo (docs) **ou** ID do comentário do Linear (artefatos) | origem/identidade do conteúdo; chave da idempotência |
 | `ticket_id` | ex.: `DIM-18`, ou `REPO` (sentinela dos docs do repo) | ticket dono do conteúdo |
@@ -62,6 +62,19 @@ O esquema é fixo em todo o wiring da esteira:
 - **Docs do repo** (via `seed.mjs`): `kind='doc'`, `stage=null`, `ticket_id='REPO'`,
   `source=<caminho relativo à raiz>` (ex.: `'CLAUDE.md'`, `'kb/README.md'`). O recall
   desses docs filtra por `--kind doc`.
+- **Código-fonte do repo** (via `seed.mjs`): `kind='code'`, `stage=null`,
+  `ticket_id='REPO'`, `source=<caminho relativo à raiz>` (ex.: `'kb/index.js'`,
+  `'.claude/skills/esteira/SKILL.md'`). Dá ao recall de execution padrões reais do
+  código. O recall filtra por `--kind code`. **O que é seedado:**
+  - `kb/` → arquivos `*.js` e `*.mjs`;
+  - `.claude/` → arquivos `*.md` (prompts/skills/agents).
+
+  **O que NÃO é seedado** (exclusões do walker): `node_modules/`, `.git/` e caches
+  (`.cache`/`dist`/`build`/`coverage`) em qualquer nível; arquivos `*.db`; arquivos de
+  teste `*.test.js`; e tudo sob `.claude/worktrees/**` (worktrees efêmeras da esteira).
+  Arquivos de texto acima de ~256 KB são pulados (binários/gerados não entram). O walker
+  é nativo (`fs.readdirSync(dir, { recursive: true })` — `fs.globSync` não existe no
+  Node 20.18.1) e a lista de sources é ordenada para ingestão determinística.
 - **Artefatos das estações** (via `ingest.mjs`): `kind ∈ {spec, worklog, review}`,
   `stage` = a estação, `source` = ID do comentário no Linear.
 
@@ -72,12 +85,15 @@ em vez de duplicar. `Memory.deleteBySource(source)` continua disponível para re
 o `seed.mjs` apenas **reforça** essa garantia — rodá-lo 2x não duplica.
 
 ```bash
-# Popular a KB com os docs base do repo (idempotente):
+# Popular a KB com os docs base + o código-fonte do repo (idempotente):
 node seed.mjs            # provider real (transformers)
 node seed.mjs --fake     # provider fake (offline)
 
 # Buscar só nos docs do repo:
 node recall.mjs "como funciona a esteira" --kind doc
+
+# Buscar padrões no código-fonte seedado:
+node recall.mjs "openMemory ingest deleteBySource" --kind code
 ```
 
 ## Dimensão dos vetores
@@ -87,6 +103,15 @@ node recall.mjs "como funciona a esteira" --kind doc
 os providers declaram `dim === EMBED_DIM`. **Trocar de modelo/dimensão** = nova
 migration (`002_*.sql` com nova tabela vetorial) + **re-index** dos documentos.
 Não há conversão automática entre dimensões.
+
+### Métrica de distância (cosine via L2-normalizado)
+
+A busca usa a distância **L2 (euclidiana)** do `vec0` (default do sqlite-vec; sem
+`distance_metric=`). Como os embeddings são **L2-normalizados** (norma ≈ 1, via
+`normalize()` em `embeddings.js`, aplicado por ambos os providers), o ranking por
+L2 é **monotonicamente equivalente a cosine**: para vetores unitários vale
+`L2² = 2·(1 − cos)`, então "menor L2" == "maior similaridade cosseno". Ou seja,
+ordenamos por cosseno na prática sem mudar a DDL nem precisar de migration.
 
 O provider real default usa `Xenova/paraphrase-multilingual-MiniLM-L12-v2`, um
 modelo **multilíngue** (PT incluso) e **simétrico**: como query e passagem

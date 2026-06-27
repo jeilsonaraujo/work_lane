@@ -23,6 +23,10 @@ pode vir prefixado por um bloco `## 📚 Memória relevante` (recall da KB) — 
 - Seja concreto: cite arquivos reais (`path:linha` quando útil).
 - Se o ticket for ambíguo demais para executar com segurança, diga isso
    explicitamente no campo `blockers`.
+- **Contrato do artefato:** o artefato DEVE começar com o header `## 🧭 Context Spec` e
+  conter **sempre** uma linha começando em `**Blockers:**` (o driver valida por
+  `^\*\*Blockers:\*\*` e deriva o estágio dela). Sem blockers → deixe o campo **vazio**
+  (não omita a linha); com blockers → liste-os ali.
 
 ## Saída (retorne EXATAMENTE neste formato Markdown)
 ```

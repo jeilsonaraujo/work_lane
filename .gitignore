@@ -10,3 +10,6 @@ npm-debug.log*
 # Modelos de embedding baixados (transformers.js cache)
 .cache/
 .transformers-cache/
+
+# Lock de driver único da esteira (anti-concorrência) — runtime, nunca versionado
+.claude/esteira.lock.d/

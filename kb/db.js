@@ -9,7 +9,7 @@ const sqliteVec = require('sqlite-vec');
  * Esta constante é a fonte de verdade compartilhada entre a tabela virtual
  * `vec_chunks` (ver schema/001_init.sql) e TODOS os providers de embedding
  * (fake e real). Trocar o modelo/dim exige uma nova migration + re-index —
- * ver memory/README.md.
+ * ver kb/README.md.
  *
  * 384 = dimensão de `paraphrase-multilingual-MiniLM-L12-v2` (transformers.js),
  * o modelo multilíngue (PT incluso) default do provider real. O provider fake

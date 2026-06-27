@@ -1,6 +1,6 @@
 // Recall manual com o provider REAL (transformers.js). Fora do gate de testes:
 // baixa modelo na 1ª execução. Uso:
-//   node memory/scripts/recall.mjs "minha consulta" [arquivo.db]
+//   node kb/scripts/recall.mjs "minha consulta" [arquivo.db]
 //
 // Ingesta alguns textos de exemplo e roda uma query semântica, só para
 // validar o pipeline ponta-a-ponta com embeddings reais.

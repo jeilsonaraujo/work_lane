@@ -5,6 +5,13 @@
 
 -- Tabela virtual vetorial (sqlite-vec). O rowid é compartilhado com `chunks`
 -- (mesmo id) para JOIN na query híbrida.
+--
+-- Métrica: vec0 ordena por distância L2 (euclidiana) por default — não passamos
+-- `distance_metric=`. Como TODOS os vetores são L2-normalizados (norma ≈ 1; ver
+-- `normalize()` em kb/embeddings.js, aplicado por ambos os providers), o ranking
+-- por L2 é monotonicamente equivalente a cosine: para vetores unitários vale
+-- L2² = 2·(1 − cos), função estritamente decrescente em cos. Logo "menor L2" ==
+-- "maior similaridade cosseno", sem precisar alterar a DDL.
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
   embedding float[{{EMBED_DIM}}]
 );

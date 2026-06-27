@@ -19,6 +19,9 @@ você projeta o sistema (a esteira) que faz isso.
   ticket ativo e existe um `Todo` elegível (todos os `blockedBy` já **integrados** = em
   `To Review` ou `Done`), ela puxa sozinha o próximo — **sem** esperar gate humano de entrada.
   Tickets em `To Review`/`blocked` esperam humano mas não ocupam a vaga. Detalhe no skill `/esteira`.
+- **Um driver por vez:** cada sweep adquire um lock de exclusão mútua
+  (`.claude/esteira.lock.d/`, `mkdir` atômico, TTL 30min) antes de tocar no Linear e o
+  libera no fim. Dois `/esteira` simultâneos não furam o WIP=1 — o 2º aborta silenciosamente.
 
 ## Máquina de estados
 

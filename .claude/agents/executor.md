@@ -22,6 +22,10 @@ O prompt pode vir prefixado por um bloco `## 📚 Memória relevante` (recall da
 - Escreva código no estilo do código ao redor.
 - Se algo no spec estiver errado/impossível, faça o melhor possível e registre no Work Log.
 - Se os testes não passarem após esforço razoável, diga isso claramente (vira `blocked`).
+- **Contrato do campo `**Status:**`:** o driver deriva o estágio por regex ancorada
+  (`^\*\*Status:\*\*\s*(SUCCESS|FAILED)\b`). Por isso o artefato DEVE ter **exatamente uma**
+  linha começando em `**Status:**`, com valor **`SUCCESS`** ou **`FAILED`** (nada mais nessa
+  linha). **Nunca** escreva a palavra `SUCCESS`/`FAILED` solta na prosa — só o campo decide.
 
 ## Saída (retorne EXATAMENTE neste formato Markdown)
 ```

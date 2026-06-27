@@ -279,6 +279,71 @@ test('query híbrida filtra por ticket/stage/kind', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// fetch: recuperação direta por metadado (sem KNN) traz o artefato inteiro.
+// ---------------------------------------------------------------------------
+test('fetch traz o artefato inteiro ordenado por source, chunk_index', async () => {
+  const mem = openMemory(':memory:');
+  // doc multi-chunk com source fixo → vários chunk_index sequenciais.
+  const text = 'palavra '.repeat(300);
+  const { chunks } = await mem.ingest({
+    ticketId: 'DIM-29',
+    stage: 'understand',
+    kind: 'spec',
+    source: 'context-spec',
+    text,
+    chunkOpts: { size: 200, overlap: 40 },
+  });
+  assert.ok(chunks > 2, 'gera vários chunks');
+  // ruído de outro ticket — não deve aparecer no fetch filtrado.
+  await mem.ingest({ ticketId: 'OTHER', kind: 'spec', source: 'noise', text: 'ruído' });
+
+  const res = mem.fetch({ ticket_id: 'DIM-29', kind: 'spec' });
+  assert.equal(res.length, chunks, 'traz TODOS os chunks do artefato');
+  assert.ok(res.every((r) => r.ticket_id === 'DIM-29'), 'só o ticket alvo');
+  // ordenado por chunk_index asc, cobrindo 0,1,2,...
+  for (let i = 0; i < res.length; i++) {
+    assert.equal(res[i].chunk_index, i, `chunk_index ${i} em ordem`);
+  }
+  // sem embedding/distância — shape compatível com query.
+  assert.ok(res.every((r) => r.distance === null), 'distance é null');
+  assert.ok('body' in res[0] && 'source' in res[0], 'mantém chaves do shape');
+
+  // LIMIT opcional via k.
+  const limited = mem.fetch({ ticket_id: 'DIM-29', kind: 'spec' }, { k: 2 });
+  assert.equal(limited.length, 2, 'k aplica LIMIT');
+  mem.close();
+});
+
+// ---------------------------------------------------------------------------
+// knnK adaptativo: filtro seletivo não esvazia o resultado quando há match.
+// ---------------------------------------------------------------------------
+test('KNN filtrado não vem vazio com match (knnK adaptativo)', async () => {
+  const mem = openMemory(':memory:');
+  // 1 chunk alvo + muito ruído de outros tickets (mais que 4*k vizinhos),
+  // de modo que o alvo NÃO estaria na janela 4*k se ela não fosse ampliada.
+  await mem.ingest({ ticketId: 'ALVO', kind: 'spec', text: 'documento alvo distinto' });
+  for (let i = 0; i < 50; i++) {
+    await mem.ingest({ ticketId: `RUIDO-${i}`, kind: 'spec', text: `ruido numero ${i}` });
+  }
+
+  // query irrelevante ao alvo + filtro seletivo no ticket alvo → ainda acha.
+  const hit = await mem.query('consulta qualquer sem relação', {
+    filter: { ticket_id: 'ALVO' },
+    k: 2,
+  });
+  assert.ok(hit.length > 0, 'filtro seletivo com match não retorna []');
+  assert.ok(hit.every((r) => r.ticket_id === 'ALVO'), 'só o ticket alvo');
+
+  // match inexistente → [].
+  const miss = await mem.query('consulta qualquer', {
+    filter: { ticket_id: 'NAO-EXISTE' },
+    k: 2,
+  });
+  assert.deepEqual(miss, [], 'ticket inexistente → []');
+  mem.close();
+});
+
+// ---------------------------------------------------------------------------
 // Isolamento: a suíte não carrega transformers (sem rede).
 // ---------------------------------------------------------------------------
 test('transformers.js NÃO foi carregado pela suíte', () => {

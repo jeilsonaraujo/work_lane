@@ -150,10 +150,58 @@ class Memory {
     `;
 
     // Pede mais candidatos ao KNN do que `k` para que o filtro de metadados
-    // ainda possa devolver `k` resultados válidos.
-    const knnK = Math.max(k * 4, k);
+    // ainda possa devolver `k` resultados válidos. Com filtro seletivo, `4*k`
+    // pode esvaziar o resultado (todos os vizinhos próximos caem fora do
+    // filtro); nesse caso ampliamos a janela do KNN (cap em totalRows / 200)
+    // para que um match real não vire `[]`. Sem filtro, mantemos `4*k` (igual
+    // ao comportamento anterior).
+    const hasFilter = FILTER_COLUMNS.some(
+      (col) => filter[col] !== undefined && filter[col] !== null
+    );
+    const knnK = hasFilter
+      ? Math.min(
+          this.db.prepare('SELECT COUNT(*) AS n FROM chunks').get().n,
+          Math.max(k * 4, 200)
+        )
+      : Math.max(k * 4, k);
     const stmt = this.db.prepare(sql);
     return stmt.all(toBlob(qvec), knnK, ...params, k);
+  }
+
+  /**
+   * Fetch direto por metadado, SEM KNN/vetor: traz o artefato inteiro (todos os
+   * chunks que casam com o filtro), ordenado por `source, chunk_index` asc.
+   * Para "spec do próprio ticket" (recuperação exata por metadado), onde KNN +
+   * filtro pós-seleção poderia devolver `[]` mesmo havendo match. Não embeda
+   * texto nem toca em `vec_chunks`.
+   *
+   * @param {object} [filter] subconjunto de {ticket_id,stage,kind,source}.
+   * @param {object} [opts]
+   * @param {number} [opts.k] LIMIT opcional; sem ele, traz todos os chunks.
+   * @returns {Array<{ticket_id,stage,kind,source,body,chunk_index,distance}>}
+   *   `distance` é sempre `null` (shape compatível com `query`).
+   */
+  fetch(filter = {}, { k } = {}) {
+    const where = ['ticket_id IS NOT NULL'];
+    const params = [];
+    for (const col of FILTER_COLUMNS) {
+      if (filter[col] !== undefined && filter[col] !== null) {
+        where.push(`${col} = ?`);
+        params.push(filter[col]);
+      }
+    }
+
+    let sql = `
+      SELECT ticket_id, stage, kind, source, body, chunk_index, NULL AS distance
+      FROM chunks
+      WHERE ${where.join(' AND ')}
+      ORDER BY source, chunk_index ASC
+    `;
+    if (k !== undefined && k !== null) {
+      sql += ' LIMIT ?';
+      params.push(k);
+    }
+    return this.db.prepare(sql).all(...params);
   }
 
   /**

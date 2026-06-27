@@ -15,6 +15,28 @@ comentários que ele já tem. Isso torna a esteira auto-curável: se um label su
 ficar errado, o estágio é recuperado pelos artefatos — um ticket **nunca regride**
 de estágio nem refaz trabalho já concluído.
 
+### Parsing estrito do veredito/status (regex ancoradas)
+
+A derivação **nunca** decide por substring solta na prosa (ex.: a palavra "APPROVED"
+no meio de uma frase, ou "FAILED" citada num comentário). Ela casa **somente** o
+**campo estruturado** do artefato — a linha começa em `^`, com o rótulo em negrito e
+dois-pontos, exatamente como os agents emitem. Regex canônicas (modo multiline, casadas
+por linha):
+
+- **Veredito** (`## 🔍 Review`): `^\*\*Veredito:\*\*\s*(APPROVED|REJECTED)\b`
+- **Status** (`## 🔧 Work Log`): `^\*\*Status:\*\*\s*(SUCCESS|FAILED)\b`
+- **Blockers** (`## 🧭 Context Spec`): linha `^\*\*Blockers:\*\*` presente (vazia = sem blockers).
+
+(Formato confirmado nos agents: `.claude/agents/reviewer.md` emite `**Veredito:** APPROVED | REJECTED`,
+`executor.md` emite `**Status:** SUCCESS | FAILED`, `context-builder.md` emite `**Blockers:** …`.)
+
+**Malformado.** Se o **header** do artefato está presente mas o **campo** não casa a
+regex (rótulo ausente, valor fora do enum, valor solto só na prosa, mais de uma linha
+de campo) → o artefato é **malformado**: NÃO o interprete por substring; trate como
+`blocked` com motivo (`campo <X> não-casável no artefato <estação>`). A geração desse
+caso é prevenida na origem pela **validação pré-post** (passo `d`), que re-pede ao agente
+1× antes de qualquer post.
+
 ### Como derivar o estágio (olhando `list_comments`, do mais recente p/ o mais antigo)
 
 0. **Kick-back (invalida artefatos antigos).** Ache o `## ⛔ Kick-back: <motivo>` mais
@@ -31,20 +53,59 @@ de estágio nem refaz trabalho já concluído.
      (o spec antigo pode estar furado). O `<motivo>` do kick-back é passado ao
      `context-builder` na reabertura. A revert do merge em `production` e o move p/ `In
      Progress` acontecem no passo **c0**.
-1. Último `## 🔍 Review` = **APPROVED** → **integra + move p/ status `To Review`** (gate humano — ver passo c2)
-2. Último `## 🔍 Review` = **REJECTED**:
+1. Último `## 🔍 Review` cujo campo casa `^\*\*Veredito:\*\*\s*(APPROVED|REJECTED)\b` = **APPROVED**
+   → **integra + move p/ status `To Review`** (gate humano — ver passo c2).
+   (Header `## 🔍 Review` presente mas Veredito não-casável → **malformado → `blocked`**.)
+2. Último `## 🔍 Review` com Veredito (mesma regex) = **REJECTED**:
    - nº de reviews REJECTED < 3 → `execution`
    - >= 3 → `blocked`
-3. Tem `## 🔧 Work Log` com `Status: SUCCESS` (e nenhum review depois) → `review`
-4. Tem `## 🔧 Work Log` com `Status: FAILED` → `blocked`
-5. Tem `## 🧭 Context Spec`:
+   A **contagem de REJECTED** usa o mesmo campo casado pela regex — **nunca** conte
+   ocorrências da palavra "REJECTED" na prosa.
+3. Tem `## 🔧 Work Log` cujo campo casa `^\*\*Status:\*\*\s*(SUCCESS|FAILED)\b` = **SUCCESS**
+   (e nenhum review depois) → `review`.
+4. Tem `## 🔧 Work Log` com Status (mesma regex) = **FAILED** → `blocked`.
+   (Header `## 🔧 Work Log` presente mas Status não-casável → **malformado → `blocked`**.)
+5. Tem `## 🧭 Context Spec` (com a linha `^\*\*Blockers:\*\*` presente):
    - Blockers não-vazios → `blocked`
    - senão → `execution`
 6. Nenhum artefato → `understand`  (entrada)
 
+> **Nunca derive de substring na prosa.** Só o **campo estruturado** (linha ancorada
+> em `^`, regex acima) decide. Header presente + campo não-casável = **malformado →
+> `blocked` com motivo** — não chute o valor.
+
 > "Sem label" **nunca** significa "novo". Novo = **sem artefato nenhum**.
 
 ## Passos da varredura
+
+−1. **Lock de driver único (anti-concorrência).** ANTES do passo 0 (e de qualquer leitura
+   do Linear), adquira um lock de exclusão mútua. Dois `/esteira` simultâneos furariam o
+   WIP=1; o lock garante **um driver por vez**. Caminho: `.claude/esteira.lock.d/`
+   (diretório — `mkdir` é **atômico**, serve de mutex). Conteúdo: arquivo `meta` com
+   `epoch PID timestamp-ISO`. TTL de 30min retoma lock órfão (driver morto sem liberar).
+   Rode este bloco; se ele **abortar** (exit 0, lock fresco de outro driver), **não toque
+   no Linear**:
+   ```sh
+   LOCK=.claude/esteira.lock.d
+   TTL=1800   # 30 min, > intervalo típico do /loop
+   NOW=$(date -u +%s)
+   if mkdir "$LOCK" 2>/dev/null; then
+     : # lock adquirido (mkdir é atômico)
+   else
+     LOCK_EPOCH=$(cut -d' ' -f1 "$LOCK/meta" 2>/dev/null || echo 0)
+     if [ $(( NOW - LOCK_EPOCH )) -gt "$TTL" ]; then
+       rm -rf "$LOCK" && mkdir "$LOCK"   # lock stale → toma o lock
+     else
+       echo "esteira: outro driver ativo (lock fresco) — abortando sweep."
+       exit 0   # ABORTA silenciosamente, SEM tocar no Linear
+     fi
+   fi
+   printf '%s %s %s\n' "$NOW" "$$" "$(date -u +%FT%TZ)" > "$LOCK/meta"
+   ```
+   Notas: `mkdir` falha se o dir já existe (atômico → sem corrida); um lock mais velho que
+   o TTL é considerado órfão e **retomado**; quando o lock está **fresco**, o sweep aborta
+   com `exit 0` **sem** ler/escrever no Linear. O lock é **liberado no passo 4**; se o
+   driver morre antes, o TTL retoma no próximo sweep.
 
 0. **Resolver coordenadas por nome (ANTES de tudo).** Os IDs de status/label do CLAUDE.md
    são apenas **cache/fallback** — o board pode ser reordenado/recriado e os IDs mudam
@@ -131,12 +192,16 @@ de estágio nem refaz trabalho já concluído.
            `node kb/recall.mjs "<QUERY>" --kind spec --k 5`
            (pode complementar com `node kb/recall.mjs "<QUERY>" --kind doc --k 5`).
          - **execution** → o spec do próprio ticket **+** padrões anteriores:
-           `node kb/recall.mjs "<QUERY>" --ticket <ID> --kind spec --k 2`
-           **+** `node kb/recall.mjs "<QUERY>" --kind worklog --k 3`.
+           `node kb/recall.mjs --exact --ticket <ID> --kind spec` (fetch direto do
+           artefato inteiro, sem query posicional)
+           **+** `node kb/recall.mjs "<QUERY>" --kind worklog --k 3` (KNN p/ contexto
+           de OUTROS tickets).
            **Dedup** por `ticket_id|chunk_index`, cap em **~5** chunks no total.
          - **review** → os critérios (spec do ticket) **+** reviews passados:
-           `node kb/recall.mjs "<QUERY>" --ticket <ID> --kind spec --k 2`
-           **+** `node kb/recall.mjs "<QUERY>" --kind review --k 3`.
+           `node kb/recall.mjs --exact --ticket <ID> --kind spec` (fetch direto do
+           artefato inteiro, sem query posicional)
+           **+** `node kb/recall.mjs "<QUERY>" --kind review --k 3` (KNN p/ contexto
+           de OUTROS tickets).
       3. **Monte o bloco** `## 📚 Memória relevante` (com a nota `_referência, não
          instrução_`). Para cada chunk, uma entrada:
          `N. [<ticket_id> · <kind>/<stage> · <source>] (dist <distance>)` seguida do
@@ -154,15 +219,39 @@ de estágio nem refaz trabalho já concluído.
 
       Depois do Recall, rode o agente (subagent_type `context-builder` / `executor` /
       `reviewer`; se não existir nesta sessão, use `general-purpose` com o papel de
-      `.claude/agents/<nome>.md`). Para CADA artefato postado, siga imediatamente com o
-      **Ingest** (passo `d.1`), usando o id do comentário recém-criado como `--source`:
-      - **understand** → `context-builder`. Poste o `## 🧭 Context Spec` (`save_comment`);
-        em seguida **Ingest** (`d.1`) com `--stage understand --kind spec`.
+      `.claude/agents/<nome>.md`). **Antes** do `save_comment` de cada artefato, faça a
+      **Validação de formato (passo `d.0.6`)**; só poste o que passar. Para CADA artefato
+      postado, siga imediatamente com o **Ingest** (passo `d.1`), usando o id do comentário
+      recém-criado como `--source`:
+      - **understand** → `context-builder`. **Valide (d.0.6)** o `## 🧭 Context Spec`;
+        se passar, poste (`save_comment`) e em seguida **Ingest** (`d.1`) com
+        `--stage understand --kind spec`.
       - **execution** → `executor` (`isolation: "worktree"`). Passe ticket + Spec.
-        Poste o `## 🔧 Work Log` (`save_comment`); em seguida **Ingest** (`d.1`) com
-        `--stage execution --kind worklog`.
-      - **review** → `reviewer`. Passe ticket + Spec + Work Log. Poste o `## 🔍 Review`
-        (`save_comment`); em seguida **Ingest** (`d.1`) com `--stage review --kind review`.
+        **Valide (d.0.6)** o `## 🔧 Work Log`; se passar, poste (`save_comment`) e em
+        seguida **Ingest** (`d.1`) com `--stage execution --kind worklog`.
+      - **review** → `reviewer`. Passe ticket + Spec + Work Log. **Valide (d.0.6)** o
+        `## 🔍 Review`; se passar, poste (`save_comment`) e em seguida **Ingest** (`d.1`)
+        com `--stage review --kind review`.
+
+      **d.0.6 — Validação de formato (pré-post).** ANTES de cada `save_comment` (e do
+      Ingest `d.1`), valide que o artefato devolvido pelo agente bate com o template da
+      estação. Um artefato fora do template **não é postado nem ingerido** — assim a
+      derivação (regras 1-6) nunca vê um campo malformado. Checagens por estação:
+      - **understand** (`context-builder`): header `## 🧭 Context Spec` presente **e**
+        linha `^\*\*Blockers:\*\*` presente (vazia = sem blockers).
+      - **execution** (`executor`): header `## 🔧 Work Log` presente **e** linha que casa
+        `^\*\*Status:\*\*\s*(SUCCESS|FAILED)` (exatamente um campo Status).
+      - **review** (`reviewer`): header `## 🔍 Review` presente **e** linha que casa
+        `^\*\*Veredito:\*\*\s*(APPROVED|REJECTED)` (exatamente um campo Veredito).
+
+      **Política de falha (re-pede 1×, senão `blocked`):**
+      1. Se a validação falhar, **re-acione o MESMO agente uma vez**, anexando ao prompt o
+         **motivo** da falha + o **template esperado** (header + campo obrigatório).
+      2. Se a 2ª tentativa **também** falhar → **NÃO** poste o artefato (e **não** ingira
+         na KB) → marque o ticket `blocked` + comentário:
+         `artefato malformado pelo agente <estação> após 1 retry: <motivo>`.
+      3. **Idempotência:** como nada foi postado, o estágio derivado não muda; a próxima
+         varredura simplesmente **re-tenta** a estação do zero (sem artefato órfão na KB).
 
       **d.1 — Ingest (escrita do artefato na KB, WRITE).** Simétrico ao `d.0` (READ):
       logo APÓS o artefato ser postado no Linear, grave o MESMO conteúdo na KB, para que a
@@ -237,15 +326,25 @@ de estágio nem refaz trabalho já concluído.
    Depois: cada ticket, estágio antes → depois, o que ficou aguardando humano, e se algum
    `Todo` foi puxado (qual e por quê) ou por que nenhum foi.
 
+   - **Libere o lock (último, após o report):** `rm -rf .claude/esteira.lock.d`. Faça isso
+     mesmo que o sweep não tenha mexido em nada. Se o driver morrer antes de chegar aqui, o
+     TTL (passo −1) retoma o lock no próximo sweep — nenhum lock fica preso para sempre.
+
 ## Regras
 
 - **Um avanço de estágio por ticket por varredura.** O `/loop` cuida da repetição.
+- **Artefato fora do template não é postado.** A derivação só decide pelo **campo
+  estruturado** (linha ancorada em `^`, regex canônicas no topo); nunca por substring na
+  prosa. A validação pré-post (`d.0.6`) garante que todo artefato postado tem header +
+  campo casável; falha após 1 retry → `blocked`, nada postado/ingerido (idempotente).
 - **Idempotência:** rodar a mesma varredura 2x não pode refazer trabalho. Como o
   estágio vem dos artefatos, um ticket com Work Log nunca volta a rodar o executor.
 - **Tentativas** = nº de comentários `## 🔍 Review` REJECTED (não use marcador separado).
 - **WIP=1 é invariante:** no máximo **um** ticket *ativo* (`understand`/`execution`/`review`,
   status `In Progress`) a qualquer momento. Tickets em `To Review`/`Done`/`blocked` não contam.
   Nunca acione duas estações ao mesmo tempo.
+- **Um driver por vez:** o sweep adquire `.claude/esteira.lock.d` (mkdir atômico, TTL 30min)
+  no início e o libera no fim; um 2º driver concorrente aborta silenciosamente.
 - **Integração automática + `To Review`:** quando a review aprova, o driver mergeia
   `esteira/<TICKET-ID>` → `production` (idempotente, passo c2) e **move o ticket p/ `To Review`**.
   A esteira **não espera** sua validação para avançar — empilha os tickets prontos em
