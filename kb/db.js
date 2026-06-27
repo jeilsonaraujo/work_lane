@@ -4,33 +4,33 @@ const Database = require('better-sqlite3');
 const sqliteVec = require('sqlite-vec');
 
 /**
- * Dimensão fixa dos vetores de embedding.
+ * Fixed dimension of the embedding vectors.
  *
- * Esta constante é a fonte de verdade compartilhada entre a tabela virtual
- * `vec_chunks` (ver schema/001_init.sql) e TODOS os providers de embedding
- * (fake e real). Trocar o modelo/dim exige uma nova migration + re-index —
- * ver kb/README.md.
+ * This constant is the shared source of truth between the virtual table
+ * `vec_chunks` (see schema/001_init.sql) and ALL embedding providers
+ * (fake and real). Changing the model/dim requires a new migration + re-index —
+ * see kb/README.md.
  *
- * 384 = dimensão de `paraphrase-multilingual-MiniLM-L12-v2` (transformers.js),
- * o modelo multilíngue (PT incluso) default do provider real. O provider fake
- * gera vetores com esta mesma dimensão para que os testes exercitem o store
- * vetorial real.
+ * 384 = dimension of `paraphrase-multilingual-MiniLM-L12-v2` (transformers.js),
+ * the default multilingual model (PT included) of the real provider. The fake
+ * provider generates vectors with this same dimension so the tests exercise the
+ * real vector store.
  */
 const EMBED_DIM = 384;
 
 /**
- * Abre uma conexão SQLite com a extensão sqlite-vec carregada.
+ * Opens a SQLite connection with the sqlite-vec extension loaded.
  *
- * Espelha o estilo da camada de registro (DIM-11): foreign_keys ON sempre,
- * WAL apenas para bancos em arquivo (não faz sentido em `:memory:`).
+ * Mirrors the style of the registry layer (WLN-11): foreign_keys ON always,
+ * WAL only for file-backed databases (makes no sense for `:memory:`).
  *
- * @param {string} [file=':memory:'] caminho do arquivo .db ou ':memory:'.
+ * @param {string} [file=':memory:'] path of the .db file or ':memory:'.
  * @returns {import('better-sqlite3').Database}
  */
 function openDb(file = ':memory:') {
   const db = new Database(file);
-  // Carrega a extensão vetorial. Lança se o binário nativo não estiver
-  // disponível — o chamador (migrate/openMemory) propaga o erro.
+  // Loads the vector extension. Throws if the native binary is not
+  // available — the caller (migrate/openMemory) propagates the error.
   sqliteVec.load(db);
   db.pragma('foreign_keys = ON');
   if (file !== ':memory:') {

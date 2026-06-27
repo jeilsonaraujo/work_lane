@@ -227,6 +227,8 @@ caso é prevenida na origem pela **validação pré-post** (passo `d`), que re-p
         se passar, poste (`save_comment`) e em seguida **Ingest** (`d.1`) com
         `--stage understand --kind spec`.
       - **execution** → `executor` (`isolation: "worktree"`). Passe ticket + Spec.
+        O worktree de isolamento herda o **HEAD local de `production`** via
+        `worktree.baseRef: "head"` (config em `.claude/settings.json`; ver CLAUDE.md).
         **Valide (d.0.6)** o `## 🔧 Work Log`; se passar, poste (`save_comment`) e em
         seguida **Ingest** (`d.1`) com `--stage execution --kind worklog`.
       - **review** → `reviewer`. Passe ticket + Spec + Work Log. **Valide (d.0.6)** o
@@ -379,12 +381,12 @@ caso é prevenida na origem pela **validação pré-post** (passo `d`), que re-p
 
 ## Cenário: kick-back (reprovação na saída)
 
-DIM-XX está em `To Review` (Review APPROVED, merge já em `production`). Você revisa, não
+WLN-XX está em `To Review` (Review APPROVED, merge já em `production`). Você revisa, não
 gosta, e cola um comentário `## ⛔ Kick-back: faltou tratar o caso vazio`.
 
 1. **Caminho feliz.** No próximo sweep, a regra 0 acha o kick-back (`KB_TS`) e invalida o
    Context Spec/Work Log/Review antigos (todos com `createdAt < KB_TS`). Não há artefato
-   posterior → estágio `understand`. O passo c0 confirma que `esteira/DIM-XX` é ancestral de
+   posterior → estágio `understand`. O passo c0 confirma que `esteira/WLN-XX` é ancestral de
    `production`, acha o merge, reverte com `git revert -m 1 --no-edit`, e reabre o ticket em
    `In Progress`. O `context-builder` recebe o `<motivo>` e refaz o spec.
 2. **Idempotência.** Se o sweep rodar de novo antes de um novo artefato existir, c0 vê que já

@@ -1,6 +1,6 @@
 'use strict';
 
-// Wrapper de teste do smoke e2e (DIM-21): roda e2e_smoke.mjs como subprocesso real,
+// Wrapper de teste do smoke e2e (WLN-21): roda e2e_smoke.mjs como subprocesso real,
 // offline (provider fake) sobre um .db temp, e assere as DUAS provas:
 //   - recall: a saída contém o bloco "## 📚 Memória relevante" (memória no prompt);
 //   - ingest: a contagem de chunks CRESCEU (chunk novo na KB).

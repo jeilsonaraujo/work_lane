@@ -15,7 +15,7 @@ O prompt pode vir prefixado por um bloco `## 📚 Memória relevante` (recall da
 1. Siga o Context Spec. Implemente as mudanças.
 2. Adicione/atualize **testes** e **docs** conforme o plano de testes.
 3. Rode os testes e o build/lint que o projeto tiver. Itere até passar.
-4. Faça commit num branch dedicado: `esteira/<TICKET-ID>` (ex.: `git checkout -b esteira/DIM-16`).
+4. Faça commit num branch dedicado: `esteira/<TICKET-ID>` (ex.: `git checkout -b esteira/WLN-16`).
 
 ## Regras
 - Fique fiel ao escopo do spec — não faça mudanças não pedidas.

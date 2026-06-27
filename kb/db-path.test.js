@@ -1,13 +1,13 @@
 'use strict';
 
-// Regressão do DIM-24: o default de `--db` é ancorado na RAIZ do repo, não no CWD.
+// Regressão do WLN-24: o default de `--db` é ancorado na RAIZ do repo, não no CWD.
 //
 // Prova de integração: ingest rodado de um CWD e recall rodado de OUTRO CWD — ambos
 // SEM `--db` — convergem no MESMO kb.db (o da raiz), então o recall acha o chunk que o
 // ingest gravou. Também garante que NENHUM kb.db é criado nos CWDs temporários.
 //
 // Cuidado: este teste grava no kb.db REAL da raiz. Usa um `source`/`ticket` sentinela
-// e limpa via deleteBySource (idempotente, DIM-23) no finally, sem tocar outros dados.
+// e limpa via deleteBySource (idempotente, WLN-23) no finally, sem tocar outros dados.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -28,10 +28,10 @@ const ROOT_DB = path.resolve(__dirname, '..', 'kb.db');
 const FAKE_ENV = { ...process.env, KB_FAKE_EMBEDDINGS: '1' };
 
 // Sentinelas exclusivos deste teste (evitam colidir/limpar dados reais).
-const SENTINEL_TICKET = 'DIM-24-DBPATH-TEST';
+const SENTINEL_TICKET = 'WLN-24-DBPATH-TEST';
 const SENTINEL_SOURCE = 'dim-24-db-path-test-sentinel';
 const SENTINEL_TEXT =
-  'sentinela DIM-24: prova de que o default de --db é ancorado na raiz do repo, ' +
+  'sentinela WLN-24: prova de que o default de --db é ancorado na raiz do repo, ' +
   'convergindo recall e ingest no mesmo kb.db de qualquer CWD.';
 
 function run(script, args, { cwd, input } = {}) {

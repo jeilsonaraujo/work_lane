@@ -3,21 +3,21 @@
 const { EMBED_DIM } = require('../db');
 
 /**
- * Provider de embedding local-first via transformers.js (@huggingface/transformers).
+ * Local-first embedding provider via transformers.js (@huggingface/transformers).
  *
- * O modelo é carregado preguiçosamente: o `import()` dinâmico só acontece na
- * PRIMEIRA chamada a `embed()`. Assim, importar este arquivo (ou rodar a suíte
- * de testes, que usa o provider fake) NUNCA baixa modelo nem toca a rede.
+ * The model is loaded lazily: the dynamic `import()` only happens on the
+ * FIRST call to `embed()`. This way, importing this file (or running the test
+ * suite, which uses the fake provider) NEVER downloads a model nor touches the network.
  *
- * `@huggingface/transformers` é uma dependência OPCIONAL: se não estiver
- * instalada, a 1ª chamada a `embed()` lança um erro claro, mas `npm install`
- * e `npm test` continuam funcionando.
+ * `@huggingface/transformers` is an OPTIONAL dependency: if it is not
+ * installed, the 1st call to `embed()` throws a clear error, but `npm install`
+ * and `npm test` keep working.
  *
- * Modelo default: `paraphrase-multilingual-MiniLM-L12-v2` (multilíngue, inclui
- * PT), dimensão === EMBED_DIM (384). É um modelo SIMÉTRICO: query e passagem
- * usam o mesmo encoding, então NÃO precisa de prefixos `query:`/`passage:` (ao
- * contrário dos modelos da família e5). Por isso a API `embed(texts)` continua
- * indistinta entre consulta e documento.
+ * Default model: `paraphrase-multilingual-MiniLM-L12-v2` (multilingual, includes
+ * PT), dimension === EMBED_DIM (384). It is a SYMMETRIC model: query and passage
+ * use the same encoding, so it does NOT need `query:`/`passage:` prefixes (unlike
+ * the models of the e5 family). That is why the `embed(texts)` API remains
+ * indistinct between query and document.
  */
 function createTransformersProvider(opts = {}) {
   const modelId = opts.model || 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
@@ -25,15 +25,15 @@ function createTransformersProvider(opts = {}) {
 
   async function getExtractor() {
     if (!extractorPromise) {
-      // import() dinâmico — só executa quando alguém chama embed().
+      // dynamic import() — only runs when someone calls embed().
       let transformers;
       try {
         transformers = await import('@huggingface/transformers');
       } catch (err) {
         throw new Error(
-          'Provider "transformers" requer @huggingface/transformers instalado ' +
-            '(dependência opcional). Rode `npm install @huggingface/transformers`. ' +
-            `Causa: ${err.message}`
+          'Provider "transformers" requires @huggingface/transformers installed ' +
+            '(optional dependency). Run `npm install @huggingface/transformers`. ' +
+            `Cause: ${err.message}`
         );
       }
       extractorPromise = transformers.pipeline('feature-extraction', modelId);
@@ -48,7 +48,7 @@ function createTransformersProvider(opts = {}) {
       const extractor = await getExtractor();
       const out = [];
       for (const text of texts) {
-        // pooling 'mean' + normalize garante norma L2 ≈ 1 (igual ao fake).
+        // pooling 'mean' + normalize ensures L2 norm ≈ 1 (same as the fake).
         const tensor = await extractor(text, { pooling: 'mean', normalize: true });
         out.push(Float32Array.from(tensor.data));
       }

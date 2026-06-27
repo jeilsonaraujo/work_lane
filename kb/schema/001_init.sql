@@ -1,22 +1,22 @@
--- Camada de memória (DIM-12) — schema inicial.
--- A dimensão dos vetores (EMBED_DIM) é injetada pelo runner (migrate.js)
--- substituindo o placeholder {{EMBED_DIM}} pela constante de db.js, garantindo
--- que tabela virtual e providers usem exatamente a mesma dimensão.
+-- Memory layer (WLN-12) — initial schema.
+-- The vector dimension (EMBED_DIM) is injected by the runner (migrate.js)
+-- replacing the placeholder {{EMBED_DIM}} with the constant from db.js, ensuring
+-- the virtual table and the providers use exactly the same dimension.
 
--- Tabela virtual vetorial (sqlite-vec). O rowid é compartilhado com `chunks`
--- (mesmo id) para JOIN na query híbrida.
+-- Vector virtual table (sqlite-vec). The rowid is shared with `chunks`
+-- (same id) for the JOIN in the hybrid query.
 --
--- Métrica: vec0 ordena por distância L2 (euclidiana) por default — não passamos
--- `distance_metric=`. Como TODOS os vetores são L2-normalizados (norma ≈ 1; ver
--- `normalize()` em kb/embeddings.js, aplicado por ambos os providers), o ranking
--- por L2 é monotonicamente equivalente a cosine: para vetores unitários vale
--- L2² = 2·(1 − cos), função estritamente decrescente em cos. Logo "menor L2" ==
--- "maior similaridade cosseno", sem precisar alterar a DDL.
+-- Metric: vec0 orders by L2 (euclidean) distance by default — we do not pass
+-- `distance_metric=`. Since ALL vectors are L2-normalized (norm ≈ 1; see
+-- `normalize()` in kb/embeddings.js, applied by both providers), the ranking
+-- by L2 is monotonically equivalent to cosine: for unit vectors it holds that
+-- L2² = 2·(1 − cos), a strictly decreasing function of cos. So "smaller L2" ==
+-- "higher cosine similarity", without needing to change the DDL.
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
   embedding float[{{EMBED_DIM}}]
 );
 
--- Metadados relacionais por chunk. `id` casa com o rowid de vec_chunks.
+-- Relational metadata per chunk. `id` matches the rowid of vec_chunks.
 CREATE TABLE IF NOT EXISTS chunks (
   id          INTEGER PRIMARY KEY,
   ticket_id   TEXT    NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS chunks (
   created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
--- Índices nos campos de filtro da query híbrida.
+-- Indexes on the filter fields of the hybrid query.
 CREATE INDEX IF NOT EXISTS idx_chunks_ticket ON chunks(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_stage  ON chunks(stage);
 CREATE INDEX IF NOT EXISTS idx_chunks_kind   ON chunks(kind);

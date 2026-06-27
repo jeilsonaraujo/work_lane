@@ -1,6 +1,6 @@
 # Base de conhecimento (`kb/`)
 
-Memória/contexto semântica da esteira v3 (portada da v2, DIM-16). Base **separada e
+Memória/contexto semântica da esteira v3 (portada da v2, WLN-16). Base **separada e
 desacoplada**: biblioteca standalone, sem serviço/MCP, usa seu próprio
 arquivo `.db` (default `kb.db`, gitignored).
 
@@ -33,7 +33,7 @@ const { openMemory } = require('./index');
 const mem = openMemory('kb.db');
 
 await mem.ingest({
-  ticketId: 'DIM-16',
+  ticketId: 'WLN-16',
   stage: 'execution',
   kind: 'spec',
   source: 'context-spec',
@@ -41,7 +41,7 @@ await mem.ingest({
 });
 
 const hits = await mem.query('busca semântica', {
-  filter: { ticket_id: 'DIM-16', stage: 'execution' }, // filtro híbrido opcional
+  filter: { ticket_id: 'WLN-16', stage: 'execution' }, // filtro híbrido opcional
   k: 5,
 });
 // hits: [{ ticket_id, stage, kind, source, body, chunk_index, distance }] ordenado por distance asc
@@ -57,7 +57,7 @@ O esquema é fixo em todo o wiring da esteira:
 | `kind` | `doc`, `code`, `spec`, `worklog`, `review` | tipo do conteúdo: doc do repo, código-fonte do repo, ou artefato de uma estação |
 | `stage` | `understand`, `execution`, `review`, `sign-off`, `blocked`, ou `null` | estágio que produziu o artefato; `null` para docs do repo |
 | `source` | caminho do arquivo (docs) **ou** ID do comentário do Linear (artefatos) | origem/identidade do conteúdo; chave da idempotência |
-| `ticket_id` | ex.: `DIM-18`, ou `REPO` (sentinela dos docs do repo) | ticket dono do conteúdo |
+| `ticket_id` | ex.: `WLN-18`, ou `REPO` (sentinela dos docs do repo) | ticket dono do conteúdo |
 
 - **Docs do repo** (via `seed.mjs`): `kind='doc'`, `stage=null`, `ticket_id='REPO'`,
   `source=<caminho relativo à raiz>` (ex.: `'CLAUDE.md'`, `'kb/README.md'`). O recall
@@ -144,6 +144,21 @@ migrations + idempotência, carga da extensão (`vec_version()`), chunking,
 determinismo do fake, ingestão, query por similaridade e híbrida, ranking por
 `distance`, e um teste que garante que `transformers.js` **não** foi carregado.
 Junto rodam os smokes de CLI (`cli.test.js`, `seed.test.js`) e o e2e (`e2e_smoke.test.js`).
+
+### Troubleshooting: `NODE_MODULE_VERSION`
+
+`better-sqlite3` é um módulo **nativo**: ele é compilado contra uma versão específica
+do Node. Ao trocar de versão (ex.: `20 → 22`), `npm test`/`seed.mjs` falham com
+`Error: ... was compiled against a different Node.js version using NODE_MODULE_VERSION`.
+**Isso não é "node ausente"** — o Node está instalado (via nvm); só o binário nativo
+precisa ser recompilado:
+
+```bash
+cd kb && npm rebuild better-sqlite3   # recompila para o Node atual
+```
+
+O repo fixa a versão em `.nvmrc` (raiz) — rode `nvm use` antes de instalar/rodar para
+manter o ambiente consistente e evitar esse mismatch.
 
 ## Smoke e2e (recall + ingest)
 

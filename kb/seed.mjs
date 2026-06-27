@@ -1,18 +1,18 @@
-// CLI de seed: popula a KB com os docs base + o código-fonte do repo, idempotente.
-// Superfície fina sobre a API de `kb/` para dar contexto base aos agentes (DIM-18/DIM-30).
+// Seed CLI: populates the KB with the base docs + the repo source code, idempotent.
+// Thin surface over the `kb/` API to give base context to the agents (WLN-18/WLN-30).
 //
-// Uso:
-//   node kb/seed.mjs [--db arquivo.db] [--fake]
+// Usage:
+//   node kb/seed.mjs [--db file.db] [--fake]
 //
-// - Provider default = real (transformers); --fake (ou KB_FAKE_EMBEDDINGS) usa o fake.
-// - Idempotente: cada source é removida por `source` (deleteBySource) antes de reingerir,
-//   então rodar 2x não duplica.
-// - Docs base: kind='doc' (ver DOCS abaixo).
-// - Código-fonte (DIM-30): kind='code' — `kb/*.{js,mjs}` (exceto *.test.js/node_modules/*.db)
-//   e `.claude/**/*.md` (exceto `.claude/worktrees/**`). Dá ao recall de execution padrões reais.
-// - Todo chunk entra com source=<caminho relativo à raiz>, stage=null, ticketId='REPO'.
-// - Arquivo ausente/grande demais/binário: avisa em stderr e pula (não falha).
-// - SOMENTE JSON vai para stdout; erros vão para stderr + exit 1.
+// - Default provider = real (transformers); --fake (or KB_FAKE_EMBEDDINGS) uses the fake.
+// - Idempotent: each source is removed by `source` (deleteBySource) before re-ingesting,
+//   so running it twice does not duplicate.
+// - Base docs: kind='doc' (see DOCS below).
+// - Source code (WLN-30): kind='code' — `kb/*.{js,mjs}` (except *.test.js/node_modules/*.db)
+//   and `.claude/**/*.md` (except `.claude/worktrees/**`). Gives the execution recall real patterns.
+// - Every chunk enters with source=<path relative to root>, stage=null, ticketId='REPO'.
+// - Missing/too-large/binary file: warns on stderr and skips (does not fail).
+// - ONLY JSON goes to stdout; errors go to stderr + exit 1.
 import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -26,18 +26,18 @@ const { createProvider } = require('./embeddings.js');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 
-// kb.db default ancorado na RAIZ do repo (não no CWD) — o MESMO DB que recall/ingest
-// resolvem por padrão, independente do diretório de onde os scripts são chamados.
+// Default kb.db anchored at the repo ROOT (not at the CWD) — the SAME DB that recall/ingest
+// resolve by default, regardless of the directory from which the scripts are called.
 const DEFAULT_DB = path.resolve(repoRoot, 'kb.db');
 
-// Docs base do repo, em caminhos relativos à RAIZ. São os `source` das tags.
+// Base repo docs, in paths relative to the ROOT. They are the `source` of the tags.
 const DOCS = ['CLAUDE.md', 'README.md', 'kb/README.md'];
 
-// Limite de tamanho por arquivo de código (~256 KB). Acima disso, pula (evita
-// arquivos gerados/binários grandes inflarem a KB). Texto-only por extensão.
+// Size limit per code file (~256 KB). Above that, skip (avoids
+// large generated/binary files inflating the KB). Text-only by extension.
 const MAX_CODE_BYTES = 256 * 1024;
 
-// Diretórios sempre excluídos do walker de código (defensivo, em qualquer nível).
+// Directories always excluded from the code walker (defensive, at any level).
 const EXCLUDED_DIRS = new Set([
   'node_modules',
   '.git',
@@ -45,29 +45,29 @@ const EXCLUDED_DIRS = new Set([
   'dist',
   'build',
   'coverage',
-  'worktrees', // cobre `.claude/worktrees/**`
+  'worktrees', // covers `.claude/worktrees/**`
 ]);
 
-// Raízes de código + extensões incluídas. `kb/` traz a lib; `.claude/` traz os
-// prompts/skills (markdown). Caminhos relativos à RAIZ do repo.
+// Code roots + included extensions. `kb/` brings the lib; `.claude/` brings the
+// prompts/skills (markdown). Paths relative to the repo ROOT.
 const CODE_ROOTS = [
   { dir: 'kb', exts: ['.js', '.mjs'] },
   { dir: '.claude', exts: ['.md'] },
 ];
 
-// Decide se um `source` (relativo à raiz) entra como código.
+// Decides whether a `source` (relative to root) enters as code.
 function isIncludedCode(rel, exts) {
   const segments = rel.split(path.sep);
-  // Exclui se qualquer segmento de diretório for proibido.
+  // Exclude if any directory segment is forbidden.
   if (segments.some((seg) => EXCLUDED_DIRS.has(seg))) return false;
-  // Defensivo: nunca ingerir DBs nem arquivos de teste como código.
+  // Defensive: never ingest DBs nor test files as code.
   if (rel.endsWith('.db')) return false;
   if (rel.endsWith('.test.js')) return false;
   return exts.some((ext) => rel.endsWith(ext));
 }
 
-// Coleta determinística (ordenada) das sources de código via walker nativo.
-// `fs.globSync` não existe no Node 20.18.1 — usamos readdirSync recursivo.
+// Deterministic (sorted) collection of the code sources via native walker.
+// `fs.globSync` does not exist in Node 20.18.1 — we use recursive readdirSync.
 function collectCodeSources() {
   const sources = new Set();
   for (const { dir, exts } of CODE_ROOTS) {
@@ -77,7 +77,7 @@ function collectCodeSources() {
     try {
       entries = readdirSync(absDir, { recursive: true, withFileTypes: true });
     } catch (err) {
-      process.stderr.write(`seed: falha ao varrer ${dir}: ${err && err.message ? err.message : err}\n`);
+      process.stderr.write(`seed: failed to scan ${dir}: ${err && err.message ? err.message : err}\n`);
       continue;
     }
     for (const d of entries) {
@@ -107,20 +107,20 @@ try {
   const seeded = [];
   let total = 0;
 
-  // Ingesta uma única source (idempotente), reusando o mesmo padrão para doc/code.
+  // Ingests a single source (idempotent), reusing the same pattern for doc/code.
   async function ingestSource(rel, kind) {
     const abs = path.resolve(repoRoot, rel);
     if (!existsSync(abs)) {
-      process.stderr.write(`seed: ${kind} ausente, pulando: ${rel}\n`);
+      process.stderr.write(`seed: ${kind} missing, skipping: ${rel}\n`);
       return;
     }
     const size = statSync(abs).size;
     if (size > MAX_CODE_BYTES) {
-      process.stderr.write(`seed: ${kind} grande demais (${size}B > ${MAX_CODE_BYTES}B), pulando: ${rel}\n`);
+      process.stderr.write(`seed: ${kind} too large (${size}B > ${MAX_CODE_BYTES}B), skipping: ${rel}\n`);
       return;
     }
     const text = readFileSync(abs, 'utf8');
-    // Idempotência: limpa o que existia para esta source antes de reingerir.
+    // Idempotency: clears whatever existed for this source before re-ingesting.
     mem.deleteBySource(rel);
     const { chunks } = await mem.ingest({
       ticketId: 'REPO',

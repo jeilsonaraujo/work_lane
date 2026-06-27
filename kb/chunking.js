@@ -4,42 +4,42 @@ const DEFAULT_CHUNK_SIZE = 512;
 const DEFAULT_OVERLAP = 64;
 
 const SEP = '\n\n';
-const FENCE_RE = /^`{3,}/; // fence de 3+ crases no início da linha
-const HEADER_RE = /^#{1,6}\s/; // header markdown (# … ######)
+const FENCE_RE = /^`{3,}/; // fence of 3+ backticks at the start of the line
+const HEADER_RE = /^#{1,6}\s/; // markdown header (# … ######)
 
 /**
- * Quebra um texto em chunks determinísticos, ciente de markdown. O mesmo input
- * produz sempre o mesmo output (mesma contagem e mesmos limites) — saída pura
- * de `(text, size, overlap)`, sem aleatoriedade.
+ * Splits a text into deterministic, markdown-aware chunks. The same input
+ * always produces the same output (same count and same boundaries) — a pure
+ * function of `(text, size, overlap)`, with no randomness.
  *
- * Estratégia (hierárquica):
- *  1. Casos-base: vazio/whitespace → []; texto ≤ `size` → [texto].
- *  2. Segmentação estrutural (na ordem do documento):
- *     - blocos de código cercados por ``` (fence de 3+ crases até a fence de
- *       fechamento) são **segmentos atômicos** — nunca partidos no meio;
- *     - fora dos blocos, segmenta por headers (`^#{1,6}\s`) e parágrafos
+ * Strategy (hierarchical):
+ *  1. Base cases: empty/whitespace → []; text ≤ `size` → [text].
+ *  2. Structural segmentation (in document order):
+ *     - code blocks fenced by ``` (fence of 3+ backticks up to the closing
+ *       fence) are **atomic segments** — never split in the middle;
+ *     - outside the blocks, segments by headers (`^#{1,6}\s`) and paragraphs
  *       (`\n\n+`).
- *  3. Agrupamento greedy: une segmentos com `\n\n` enquanto couberem em `size`;
- *     ao exceder, fecha o chunk e começa outro.
- *  4. Fallback por caractere: um segmento isolado maior que `size` degrada em
- *     janelas de `size` avançando `size - overlap` por passo (não trava).
+ *  3. Greedy grouping: joins segments with `\n\n` while they fit in `size`;
+ *     when it exceeds, closes the chunk and starts another.
+ *  4. Per-character fallback: an isolated segment larger than `size` degrades into
+ *     windows of `size` advancing `size - overlap` per step (does not hang).
  *
- * O `overlap` só se aplica no fallback por caractere (passo 4); entre chunks
- * estruturais (passo 3) NÃO há sobreposição.
+ * `overlap` only applies in the per-character fallback (step 4); between
+ * structural chunks (step 3) there is NO overlap.
  *
  * @param {string} text
  * @param {object} [opts]
- * @param {number} [opts.size=512]    tamanho máximo do chunk (caracteres).
- * @param {number} [opts.overlap=64]  sobreposição entre janelas do fallback.
+ * @param {number} [opts.size=512]    maximum chunk size (characters).
+ * @param {number} [opts.overlap=64]  overlap between fallback windows.
  * @returns {string[]}
  */
 function chunkText(text, opts = {}) {
   const size = opts.size ?? DEFAULT_CHUNK_SIZE;
   const overlap = opts.overlap ?? DEFAULT_OVERLAP;
 
-  if (size <= 0) throw new Error('chunk size deve ser > 0');
+  if (size <= 0) throw new Error('chunk size must be > 0');
   if (overlap < 0 || overlap >= size) {
-    throw new Error('overlap deve estar em [0, size)');
+    throw new Error('overlap must be in [0, size)');
   }
 
   const normalized = String(text ?? '').trim();
@@ -59,7 +59,7 @@ function chunkText(text, opts = {}) {
 
   for (const seg of segments) {
     if (seg.length > size) {
-      // Segmento isolado grande demais: fecha o que houver e degrada por caractere.
+      // Isolated segment too large: flush whatever exists and degrade per character.
       flush();
       for (const piece of charWindows(seg, size, overlap)) chunks.push(piece);
       continue;
@@ -78,9 +78,9 @@ function chunkText(text, opts = {}) {
 }
 
 /**
- * Segmenta o texto em unidades estruturais (na ordem do documento):
- * blocos de código atômicos, e fora deles headers/parágrafos.
- * @param {string} text já normalizado (trim aplicado).
+ * Segments the text into structural units (in document order):
+ * atomic code blocks, and outside them headers/paragraphs.
+ * @param {string} text already normalized (trim applied).
  * @returns {string[]}
  */
 function segment(text) {
@@ -98,12 +98,12 @@ function segment(text) {
   let i = 0;
   while (i < lines.length) {
     if (FENCE_RE.test(lines[i])) {
-      // Bloco de código cercado: do fence de abertura até o de fechamento.
+      // Fenced code block: from the opening fence to the closing one.
       flushText();
       const start = i;
       i += 1;
       while (i < lines.length && !FENCE_RE.test(lines[i])) i += 1;
-      if (i < lines.length) i += 1; // consome a fence de fechamento, se houver
+      if (i < lines.length) i += 1; // consumes the closing fence, if any
       const code = lines.slice(start, i).join('\n').trim();
       if (code) segments.push(code);
     } else {
@@ -116,8 +116,8 @@ function segment(text) {
 }
 
 /**
- * Divide um bloco de prosa por parágrafos (`\n\n+`) e por headers — um header
- * inicia um novo segmento (levando consigo as linhas seguintes do parágrafo).
+ * Splits a prose block by paragraphs (`\n\n+`) and by headers — a header
+ * starts a new segment (carrying with it the following lines of the paragraph).
  * @param {string} text
  * @returns {string[]}
  */
@@ -142,9 +142,9 @@ function splitProse(text) {
 }
 
 /**
- * Fallback por caractere — paridade EXATA com o algoritmo original: janela de
- * `size`, avançando `step = size - overlap`, encerrando quando a janela atinge
- * o fim do texto.
+ * Per-character fallback — EXACT parity with the original algorithm: window of
+ * `size`, advancing `step = size - overlap`, stopping when the window reaches
+ * the end of the text.
  * @param {string} text
  * @param {number} size
  * @param {number} overlap

@@ -7,8 +7,8 @@ const { EMBED_DIM } = require('./db');
 const SCHEMA_DIR = path.join(__dirname, 'schema');
 
 /**
- * Garante a tabela de controle de migrations.
- * Mantida fora dos arquivos .sql para que o runner seja auto-suficiente.
+ * Ensures the migrations control table.
+ * Kept outside the .sql files so the runner is self-sufficient.
  */
 function ensureMigrationsTable(db) {
   db.exec(`
@@ -20,8 +20,8 @@ function ensureMigrationsTable(db) {
 }
 
 /**
- * Lê os arquivos `NNN_*.sql` de SCHEMA_DIR em ordem lexicográfica.
- * A `version` é o nome do arquivo sem extensão.
+ * Reads the `NNN_*.sql` files from SCHEMA_DIR in lexicographic order.
+ * The `version` is the file name without extension.
  */
 function listMigrations() {
   return fs
@@ -35,15 +35,15 @@ function listMigrations() {
 }
 
 /**
- * Aplica todas as migrations pendentes. Idempotente: uma 2ª chamada não
- * reaplica nada (consulta `schema_migrations`). Cada migration roda dentro de
- * uma transação junto com o registro da versão.
+ * Applies all pending migrations. Idempotent: a 2nd call does not
+ * reapply anything (queries `schema_migrations`). Each migration runs inside a
+ * transaction together with recording the version.
  *
- * O placeholder {{EMBED_DIM}} é substituído pela constante de db.js, garantindo
- * que a tabela vetorial e os providers concordem sobre a dimensão.
+ * The {{EMBED_DIM}} placeholder is replaced by the constant from db.js, ensuring
+ * the vector table and the providers agree on the dimension.
  *
  * @param {import('better-sqlite3').Database} db
- * @returns {string[]} versões aplicadas nesta chamada.
+ * @returns {string[]} versions applied in this call.
  */
 function migrate(db) {
   ensureMigrationsTable(db);

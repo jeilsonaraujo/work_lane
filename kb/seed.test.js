@@ -1,6 +1,6 @@
 'use strict';
 
-// Smoke e2e da CLI seed.mjs + teste direto de deleteBySource (DIM-18).
+// Smoke e2e da CLI seed.mjs + teste direto de deleteBySource (WLN-18).
 //
 // Invoca seed.mjs/recall.mjs como subprocessos reais (como o driver faria) e força
 // o provider fake (offline) via --fake + KB_FAKE_EMBEDDINGS, sobre um .db temp.

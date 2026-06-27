@@ -5,11 +5,11 @@ const { migrate } = require('./migrate');
 const { createProvider } = require('./embeddings');
 const { chunkText } = require('./chunking');
 
-// NÃO importar `registry` aqui — a camada de memória é desacoplada (DIM-12).
+// Do NOT import `registry` here — the memory layer is decoupled (WLN-12).
 
 /**
- * Serializa um Float32Array para o formato aceito pelo sqlite-vec na escrita e
- * na cláusula MATCH (Buffer do buffer subjacente).
+ * Serializes a Float32Array into the format accepted by sqlite-vec on writes and
+ * in the MATCH clause (Buffer of the underlying buffer).
  */
 function toBlob(vec) {
   const f32 = vec instanceof Float32Array ? vec : Float32Array.from(vec);
@@ -19,22 +19,22 @@ function toBlob(vec) {
 const FILTER_COLUMNS = ['ticket_id', 'stage', 'kind', 'source'];
 
 /**
- * Camada de memória: ingestão (chunk → embed → persiste vetor+metadados) e
- * query híbrida (filtro de metadados + KNN por similaridade).
+ * Memory layer: ingestion (chunk → embed → persist vector+metadata) and
+ * hybrid query (metadata filter + similarity KNN).
  */
 class Memory {
   /**
-   * @param {import('better-sqlite3').Database} db conexão já migrada.
+   * @param {import('better-sqlite3').Database} db already-migrated connection.
    * @param {object} opts
-   * @param {object} [opts.provider] provider de embedding (default: fake).
+   * @param {object} [opts.provider] embedding provider (default: fake).
    */
   constructor(db, { provider } = {}) {
     this.db = db;
     this.provider = provider || createProvider('fake');
     if (this.provider.dim !== EMBED_DIM) {
       throw new Error(
-        `Provider "${this.provider.name}" tem dim=${this.provider.dim}, ` +
-          `esperado ${EMBED_DIM}. Trocar dim exige nova migration + re-index.`
+        `Provider "${this.provider.name}" has dim=${this.provider.dim}, ` +
+          `expected ${EMBED_DIM}. Changing dim requires a new migration + re-index.`
       );
     }
     this._insertChunk = db.prepare(
@@ -47,8 +47,8 @@ class Memory {
   }
 
   /**
-   * Ingesta um documento: chunking + embedding + persistência transacional.
-   * Metadados e vetor compartilham o mesmo rowid.
+   * Ingests a document: chunking + embedding + transactional persistence.
+   * Metadata and vector share the same rowid.
    *
    * @param {object} doc
    * @param {string} doc.ticketId
@@ -56,20 +56,20 @@ class Memory {
    * @param {string} [doc.kind]
    * @param {string} [doc.source]
    * @param {string} doc.text
-   * @param {object} [doc.chunkOpts] opções de chunking (size/overlap).
+   * @param {object} [doc.chunkOpts] chunking options (size/overlap).
    * @returns {Promise<{chunks:number, ids:number[]}>}
    */
   async ingest({ ticketId, stage = null, kind = null, source = null, text, chunkOpts }) {
-    if (!ticketId) throw new Error('ingest: ticketId é obrigatório');
+    if (!ticketId) throw new Error('ingest: ticketId is required');
     const pieces = chunkText(text, chunkOpts);
     if (pieces.length === 0) return { chunks: 0, ids: [] };
 
     const vectors = await this.provider.embed(pieces);
 
     const run = this.db.transaction(() => {
-      // Idempotência por `source`: reingerir o mesmo artefato substitui os
-      // chunks anteriores em vez de duplicar. `source == null` não dispara
-      // dedup (senão apagaria todos os chunks com source IS NULL).
+      // Idempotency by `source`: re-ingesting the same artifact replaces the
+      // previous chunks instead of duplicating. `source == null` does not trigger
+      // dedup (otherwise it would delete every chunk with source IS NULL).
       if (source != null) this._purgeSource(source);
       const ids = [];
       for (let i = 0; i < pieces.length; i++) {
@@ -81,8 +81,8 @@ class Memory {
           chunk_index: i,
           body: pieces[i],
         });
-        // sqlite-vec exige a rowid (PK da vec0) como inteiro — usamos o
-        // BigInt original de lastInsertRowid para satisfazer o bind.
+        // sqlite-vec requires the rowid (vec0 PK) as an integer — we use the
+        // original BigInt from lastInsertRowid to satisfy the bind.
         const rowid = info.lastInsertRowid;
         this._insertVec.run(BigInt(rowid), toBlob(vectors[i]));
         ids.push(Number(rowid));
@@ -95,11 +95,11 @@ class Memory {
   }
 
   /**
-   * Ingesta vários documentos em sequência. Cada documento é uma transação
-   * independente (via `ingest`).
+   * Ingests several documents in sequence. Each document is an independent
+   * transaction (via `ingest`).
    *
    * @param {Array<object>} docs
-   * @returns {Promise<{chunks:number, ids:number[]}>} totais agregados.
+   * @returns {Promise<{chunks:number, ids:number[]}>} aggregated totals.
    */
   async ingestBatch(docs) {
     let chunks = 0;
@@ -113,12 +113,12 @@ class Memory {
   }
 
   /**
-   * Query híbrida: filtro por metadados + KNN por similaridade, ordenado por
-   * `distance` ascendente (menor = mais similar).
+   * Hybrid query: metadata filter + similarity KNN, ordered by `distance`
+   * ascending (smaller = more similar).
    *
-   * @param {string} text consulta em linguagem natural.
+   * @param {string} text natural-language query.
    * @param {object} [opts]
-   * @param {object} [opts.filter] subconjunto de {ticket_id,stage,kind,source}.
+   * @param {object} [opts.filter] subset of {ticket_id,stage,kind,source}.
    * @param {number} [opts.k=5] top-k.
    * @returns {Promise<Array<{ticket_id,stage,kind,source,body,chunk_index,distance}>>}
    */
@@ -134,8 +134,8 @@ class Memory {
       }
     }
 
-    // KNN do sqlite-vec exige `embedding MATCH ? AND k = ?` na subconsulta
-    // vetorial; o JOIN traz os metadados e o WHERE aplica o filtro híbrido.
+    // sqlite-vec KNN requires `embedding MATCH ? AND k = ?` in the vector
+    // subquery; the JOIN brings the metadata and the WHERE applies the hybrid filter.
     const sql = `
       SELECT c.ticket_id, c.stage, c.kind, c.source, c.body, c.chunk_index, v.distance
       FROM (
@@ -149,12 +149,11 @@ class Memory {
       LIMIT ?
     `;
 
-    // Pede mais candidatos ao KNN do que `k` para que o filtro de metadados
-    // ainda possa devolver `k` resultados válidos. Com filtro seletivo, `4*k`
-    // pode esvaziar o resultado (todos os vizinhos próximos caem fora do
-    // filtro); nesse caso ampliamos a janela do KNN (cap em totalRows / 200)
-    // para que um match real não vire `[]`. Sem filtro, mantemos `4*k` (igual
-    // ao comportamento anterior).
+    // Asks the KNN for more candidates than `k` so the metadata filter can
+    // still return `k` valid results. With a selective filter, `4*k` may empty
+    // the result (all near neighbors fall outside the filter); in that case we
+    // widen the KNN window (capped at totalRows / 200) so a real match does not
+    // become `[]`. Without a filter, we keep `4*k` (same as the previous behavior).
     const hasFilter = FILTER_COLUMNS.some(
       (col) => filter[col] !== undefined && filter[col] !== null
     );
@@ -169,17 +168,17 @@ class Memory {
   }
 
   /**
-   * Fetch direto por metadado, SEM KNN/vetor: traz o artefato inteiro (todos os
-   * chunks que casam com o filtro), ordenado por `source, chunk_index` asc.
-   * Para "spec do próprio ticket" (recuperação exata por metadado), onde KNN +
-   * filtro pós-seleção poderia devolver `[]` mesmo havendo match. Não embeda
-   * texto nem toca em `vec_chunks`.
+   * Direct fetch by metadata, WITHOUT KNN/vector: brings the whole artifact (all
+   * chunks matching the filter), ordered by `source, chunk_index` asc.
+   * For "the ticket's own spec" (exact retrieval by metadata), where KNN +
+   * post-selection filter could return `[]` even with a match. Does not embed
+   * text nor touch `vec_chunks`.
    *
-   * @param {object} [filter] subconjunto de {ticket_id,stage,kind,source}.
+   * @param {object} [filter] subset of {ticket_id,stage,kind,source}.
    * @param {object} [opts]
-   * @param {number} [opts.k] LIMIT opcional; sem ele, traz todos os chunks.
+   * @param {number} [opts.k] optional LIMIT; without it, brings all chunks.
    * @returns {Array<{ticket_id,stage,kind,source,body,chunk_index,distance}>}
-   *   `distance` é sempre `null` (shape compatível com `query`).
+   *   `distance` is always `null` (shape compatible with `query`).
    */
   fetch(filter = {}, { k } = {}) {
     const where = ['ticket_id IS NOT NULL'];
@@ -205,12 +204,12 @@ class Memory {
   }
 
   /**
-   * Remove todos os chunks (metadados + vetores) de uma dada `source`.
-   * Como `chunks.id` casa com o `rowid` de `vec_chunks` (sem FK/cascade entre
-   * a tabela virtual e a relacional), apagamos os dois pareados numa transação.
+   * Removes all chunks (metadata + vectors) of a given `source`.
+   * Since `chunks.id` matches the `rowid` of `vec_chunks` (no FK/cascade between
+   * the virtual and the relational table), we delete both paired in a transaction.
    *
    * @param {string} source
-   * @returns {number} quantidade de chunks removidos.
+   * @returns {number} number of chunks removed.
    */
   deleteBySource(source) {
     const run = this.db.transaction(() => this._purgeSource(source));
@@ -218,13 +217,13 @@ class Memory {
   }
 
   /**
-   * Núcleo de deleção por `source` SEM `db.transaction` própria, para ser
-   * reusado tanto por `deleteBySource` (que faz o wrap transacional) quanto por
-   * `ingest` (já rodando dentro da sua transação). Evita transação aninhada e
-   * preserva o pareamento `chunks`↔`vec_chunks` (mesmo id/rowid).
+   * Core of deletion by `source` WITHOUT its own `db.transaction`, so it can be
+   * reused both by `deleteBySource` (which does the transactional wrap) and by
+   * `ingest` (already running inside its transaction). Avoids a nested transaction
+   * and preserves the `chunks`↔`vec_chunks` pairing (same id/rowid).
    *
    * @param {string} source
-   * @returns {number} quantidade de chunks removidos.
+   * @returns {number} number of chunks removed.
    */
   _purgeSource(source) {
     const ids = this.db
@@ -232,7 +231,7 @@ class Memory {
       .all(source)
       .map((r) => r.id);
     const delVec = this.db.prepare('DELETE FROM vec_chunks WHERE rowid = ?');
-    // sqlite-vec exige a rowid como inteiro no bind — mesmo padrão do ingest.
+    // sqlite-vec requires the rowid as an integer in the bind — same pattern as ingest.
     for (const id of ids) delVec.run(BigInt(id));
     this.db.prepare('DELETE FROM chunks WHERE source = ?').run(source);
     return ids.length;
@@ -244,7 +243,7 @@ class Memory {
 }
 
 /**
- * Cria uma Memory sobre uma conexão existente, rodando migrations.
+ * Creates a Memory over an existing connection, running migrations.
  */
 function createMemory(db, opts = {}) {
   migrate(db);
@@ -252,8 +251,8 @@ function createMemory(db, opts = {}) {
 }
 
 /**
- * Abre (ou cria) um arquivo de memória, carrega sqlite-vec, roda migrations e
- * devolve a Memory pronta.
+ * Opens (or creates) a memory file, loads sqlite-vec, runs migrations and
+ * returns the ready Memory.
  *
  * @param {string} [file=':memory:']
  * @param {object} [opts] { provider }

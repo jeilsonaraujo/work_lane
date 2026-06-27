@@ -1,14 +1,14 @@
-// CLI de ingest: lê texto do stdin, ingere na KB e imprime {chunks, ids} como JSON.
-// Superfície fina sobre a API de `kb/` para o driver da esteira (DIM-17).
+// Ingest CLI: reads text from stdin, ingests into the KB and prints {chunks, ids} as JSON.
+// Thin surface over the `kb/` API for the pipeline driver (WLN-17).
 //
-// Uso:
-//   echo "texto" | node kb/ingest.mjs --ticket ID [--stage S] [--kind K] \
-//        [--source SRC] [--db arquivo.db] [--fake]
+// Usage:
+//   echo "text" | node kb/ingest.mjs --ticket ID [--stage S] [--kind K] \
+//        [--source SRC] [--db file.db] [--fake]
 //
-// - --ticket é OBRIGATÓRIO.
-// - Provider default = real (transformers); --fake (ou KB_FAKE_EMBEDDINGS) usa o fake.
-// - stdin vazio → {chunks:0, ids:[]} (não é erro).
-// - SOMENTE JSON vai para stdout; erros vão para stderr + exit 1.
+// - --ticket is REQUIRED.
+// - Default provider = real (transformers); --fake (or KB_FAKE_EMBEDDINGS) uses the fake.
+// - empty stdin → {chunks:0, ids:[]} (not an error).
+// - ONLY JSON goes to stdout; errors go to stderr + exit 1.
 import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -18,8 +18,8 @@ const require = createRequire(import.meta.url);
 const { openMemory } = require('./index.js');
 const { createProvider } = require('./embeddings.js');
 
-// kb.db default ancorado na RAIZ do repo (script vive em kb/, então '..' = raiz),
-// não no CWD — assim recall/ingest convergem no MESMO DB de qualquer diretório.
+// Default kb.db anchored at the repo ROOT (script lives in kb/, so '..' = root),
+// not at the CWD — this way recall/ingest converge on the SAME DB from any directory.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DB = path.resolve(__dirname, '..', 'kb.db');
 
@@ -35,13 +35,13 @@ const { values } = parseArgs({
 });
 
 if (!values.ticket) {
-  process.stderr.write('ingest: --ticket é obrigatório\n');
+  process.stderr.write('ingest: --ticket is required\n');
   process.exit(1);
 }
 
 const useFake = values.fake || Boolean(process.env.KB_FAKE_EMBEDDINGS);
 
-// Lê o stdin inteiro até EOF.
+// Reads the whole stdin until EOF.
 let text = '';
 for await (const chunk of process.stdin) text += chunk;
 

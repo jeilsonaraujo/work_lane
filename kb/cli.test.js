@@ -1,6 +1,6 @@
 'use strict';
 
-// Smoke e2e das CLIs recall.mjs / ingest.mjs (DIM-17).
+// Smoke e2e das CLIs recall.mjs / ingest.mjs (WLN-17).
 //
 // Invoca os scripts como subprocessos reais (como o driver faria) e força o
 // provider fake (offline) via --fake + KB_FAKE_EMBEDDINGS, sobre um .db temp.
@@ -38,7 +38,7 @@ function withTempDb(fn) {
 
 test('ingest via stdin produz chunks>0 e ids.length === chunks; saída é JSON', () => {
   withTempDb((db) => {
-    const res = run(INGEST, ['--ticket', 'DIM-17', '--kind', 'doc', '--fake', '--db', db], {
+    const res = run(INGEST, ['--ticket', 'WLN-17', '--kind', 'doc', '--fake', '--db', db], {
       input: 'A memória usa sqlite-vec sobre better-sqlite3 com embeddings local-first.',
     });
     assert.equal(res.status, 0, `ingest deveria sair 0. stderr=${res.stderr}`);
@@ -56,7 +56,7 @@ test('ingest via stdin produz chunks>0 e ids.length === chunks; saída é JSON',
 test('recall depois do ingest retorna top-1 = texto ingerido; saída é JSON', () => {
   withTempDb((db) => {
     const texto = 'O chunking é determinístico por tamanho e overlap.';
-    const ing = run(INGEST, ['--ticket', 'DIM-17', '--fake', '--db', db], { input: texto });
+    const ing = run(INGEST, ['--ticket', 'WLN-17', '--fake', '--db', db], { input: texto });
     assert.equal(ing.status, 0, `ingest deveria sair 0. stderr=${ing.stderr}`);
 
     const rec = run(RECALL, [texto, '--k', '3', '--fake', '--db', db]);
@@ -70,7 +70,7 @@ test('recall depois do ingest retorna top-1 = texto ingerido; saída é JSON', (
     assert.ok(Array.isArray(results), 'recall retorna array');
     assert.ok(results.length > 0, 'recall retorna ao menos 1 resultado');
     assert.equal(results[0].body, texto, 'top-1 é o texto ingerido');
-    assert.equal(results[0].ticket_id, 'DIM-17', 'metadado ticket_id presente');
+    assert.equal(results[0].ticket_id, 'WLN-17', 'metadado ticket_id presente');
   });
 });
 
@@ -91,7 +91,7 @@ test('recall com --ticket filtra por ticket_id', () => {
 
 test('ingest com stdin vazio retorna {chunks:0, ids:[]} (não é erro)', () => {
   withTempDb((db) => {
-    const res = run(INGEST, ['--ticket', 'DIM-17', '--fake', '--db', db], { input: '' });
+    const res = run(INGEST, ['--ticket', 'WLN-17', '--fake', '--db', db], { input: '' });
     assert.equal(res.status, 0, `ingest vazio deveria sair 0. stderr=${res.stderr}`);
     const out = JSON.parse(res.stdout);
     assert.equal(out.chunks, 0);
@@ -122,7 +122,7 @@ test('recall --exact (sem --k) retorna o artefato INTEIRO mesmo com >5 chunks', 
     const spec = 'criterio de aceite do recall hibrido '.repeat(150);
     const ing = run(
       INGEST,
-      ['--ticket', 'DIM-29', '--kind', 'spec', '--source', 'spec-1', '--fake', '--db', db],
+      ['--ticket', 'WLN-29', '--kind', 'spec', '--source', 'spec-1', '--fake', '--db', db],
       { input: spec }
     );
     assert.equal(ing.status, 0, `ingest deveria sair 0. stderr=${ing.stderr}`);
@@ -130,14 +130,14 @@ test('recall --exact (sem --k) retorna o artefato INTEIRO mesmo com >5 chunks', 
     assert.ok(ingOut.chunks > 5, `spec precisa de >5 chunks p/ provar o fix (got ${ingOut.chunks})`);
 
     // --exact SEM --k e SEM query posicional → status 0 + array JSON completo.
-    const rec = run(RECALL, ['--exact', '--ticket', 'DIM-29', '--kind', 'spec', '--fake', '--db', db]);
+    const rec = run(RECALL, ['--exact', '--ticket', 'WLN-29', '--kind', 'spec', '--fake', '--db', db]);
     assert.equal(rec.status, 0, `recall --exact deveria sair 0. stderr=${rec.stderr}`);
     const results = JSON.parse(rec.stdout);
     assert.ok(Array.isArray(results), 'retorna array');
     assert.equal(results.length, ingOut.chunks, 'traz TODOS os chunks do spec (sem LIMIT 5)');
     for (let i = 0; i < results.length; i++) {
       assert.equal(results[i].chunk_index, i, 'ordenado por chunk_index');
-      assert.equal(results[i].ticket_id, 'DIM-29', 'só o ticket alvo');
+      assert.equal(results[i].ticket_id, 'WLN-29', 'só o ticket alvo');
       assert.equal(results[i].distance, null, 'sem distância (fetch direto)');
     }
   });
@@ -148,7 +148,7 @@ test('recall --exact --k N aplica o limite explícito (override continua valendo
     const spec = 'criterio de aceite do recall hibrido '.repeat(150);
     const ing = run(
       INGEST,
-      ['--ticket', 'DIM-29', '--kind', 'spec', '--source', 'spec-1', '--fake', '--db', db],
+      ['--ticket', 'WLN-29', '--kind', 'spec', '--source', 'spec-1', '--fake', '--db', db],
       { input: spec }
     );
     assert.equal(ing.status, 0, `ingest deveria sair 0. stderr=${ing.stderr}`);
@@ -157,7 +157,7 @@ test('recall --exact --k N aplica o limite explícito (override continua valendo
 
     const rec = run(
       RECALL,
-      ['--exact', '--ticket', 'DIM-29', '--kind', 'spec', '--k', '3', '--fake', '--db', db]
+      ['--exact', '--ticket', 'WLN-29', '--kind', 'spec', '--k', '3', '--fake', '--db', db]
     );
     assert.equal(rec.status, 0, `recall --exact --k 3 deveria sair 0. stderr=${rec.stderr}`);
     const results = JSON.parse(rec.stdout);

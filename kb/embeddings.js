@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const { EMBED_DIM } = require('./db');
 
 /**
- * Contrato de provider de embedding (injetável):
+ * Embedding provider contract (injectable):
  *
  *   {
  *     name: string,
@@ -12,13 +12,13 @@ const { EMBED_DIM } = require('./db');
  *     embed(texts: string[]): Promise<Float32Array[]>
  *   }
  *
- * Os vetores devem ser normalizados (norma L2 ≈ 1) para que a distância do
- * sqlite-vec corresponda à similaridade de cosseno. O contrato é o mesmo para
- * o provider fake (testes), o transformers.js (local-first) e um futuro Voyage.
+ * The vectors must be normalized (L2 norm ≈ 1) so that the sqlite-vec distance
+ * corresponds to cosine similarity. The contract is the same for the fake
+ * provider (tests), transformers.js (local-first) and a future Voyage.
  */
 
 /**
- * Normaliza um Float32Array in-place (L2). Vetor nulo é deixado como está.
+ * Normalizes a Float32Array in-place (L2). A null vector is left as is.
  */
 function normalize(vec) {
   let sumSq = 0;
@@ -31,11 +31,11 @@ function normalize(vec) {
 }
 
 /**
- * Provider determinístico para testes — SEM rede, SEM modelo.
+ * Deterministic provider for tests — NO network, NO model.
  *
- * Deriva o vetor de um hash do texto: o mesmo texto sempre produz o mesmo
- * vetor (determinismo) e textos diferentes produzem vetores diferentes.
- * O resultado é normalizado e tem dimensão `EMBED_DIM`.
+ * Derives the vector from a hash of the text: the same text always produces the
+ * same vector (determinism) and different texts produce different vectors.
+ * The result is normalized and has dimension `EMBED_DIM`.
  */
 class FakeEmbeddingProvider {
   constructor({ dim = EMBED_DIM } = {}) {
@@ -44,12 +44,12 @@ class FakeEmbeddingProvider {
   }
 
   /**
-   * Gera o vetor determinístico de um único texto. Exposto para que os testes
-   * construam vetores de consulta esperados sem depender de detalhes internos.
+   * Generates the deterministic vector of a single text. Exposed so the tests
+   * can build expected query vectors without depending on internal details.
    */
   embedOne(text) {
     const vec = new Float32Array(this.dim);
-    // Hash expansível: encadeia sha256 até preencher `dim` floats.
+    // Expandable hash: chains sha256 until `dim` floats are filled.
     let block = 0;
     let filled = 0;
     while (filled < this.dim) {
@@ -57,7 +57,7 @@ class FakeEmbeddingProvider {
         .createHash('sha256')
         .update(`${block}:${text}`)
         .digest();
-      // Cada byte vira um float em [-1, 1).
+      // Each byte becomes a float in [-1, 1).
       for (let i = 0; i < digest.length && filled < this.dim; i++) {
         vec[filled++] = digest[i] / 127.5 - 1;
       }
@@ -72,9 +72,9 @@ class FakeEmbeddingProvider {
 }
 
 /**
- * Factory de providers. Default = fake (offline). O provider real
- * (transformers.js) é carregado preguiçosamente para que importar este módulo
- * — e rodar os testes — nunca baixe modelo nem dependa de rede.
+ * Provider factory. Default = fake (offline). The real provider
+ * (transformers.js) is loaded lazily so that importing this module
+ * — and running the tests — never downloads a model nor depends on the network.
  *
  * @param {string} [name='fake']
  * @param {object} [opts]
@@ -85,12 +85,12 @@ function createProvider(name = 'fake', opts = {}) {
     case 'fake':
       return new FakeEmbeddingProvider(opts);
     case 'transformers': {
-      // import lazy: só puxa o módulo (e o modelo) quando explicitamente pedido.
+      // lazy import: only pulls the module (and the model) when explicitly requested.
       const { createTransformersProvider } = require('./providers/transformers');
       return createTransformersProvider(opts);
     }
     default:
-      throw new Error(`Provider de embedding desconhecido: ${name}`);
+      throw new Error(`Unknown embedding provider: ${name}`);
   }
 }
 

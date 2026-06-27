@@ -45,6 +45,10 @@ Fluxo: `Todo ─(auto)─► In Progress` → understand → execution → revie
 
 Tentativas = nº de comentários `## 🔍 Review` REJECTED. Limite: 3 → `blocked`.
 **Base de branch para review/merge: `production`.** Executor commita em `esteira/<TICKET-ID>`.
+O worktree de isolamento do executor parte do **HEAD local de `production`** via
+`worktree.baseRef: "head"` em `.claude/settings.json` (a chave só aceita `"fresh"` ou
+`"head"`). Motivo: não há `origin/HEAD` resolvível e o código integrado vive só no
+`production` local — o default `"fresh"` perderia os tickets já mergeados.
 
 | Evento | Ação da esteira |
 |---|---|
@@ -71,11 +75,11 @@ A `kb/` é a camada de memória vetorial local (sqlite-vec + embeddings local-fi
 
 O driver usa a KB em dois momentos por ticket (read + write):
 - **Recall** (antes de acionar a estação): consulta a KB e injeta um bloco
-  `## 📚 Memória relevante` no prompt do agente. *(wiring em DIM-19)*
+  `## 📚 Memória relevante` no prompt do agente. *(wiring em WLN-19)*
 - **Ingest** (depois de postar o artefato no Linear): grava Context Spec / Work Log /
-  Review na KB, com tags `kind`/`stage`/`source`, de forma idempotente. *(wiring em DIM-20)*
+  Review na KB, com tags `kind`/`stage`/`source`, de forma idempotente. *(wiring em WLN-20)*
 
-> CLIs `kb/recall.mjs` e `kb/ingest.mjs` são a superfície que o driver chama (DIM-17).
+> CLIs `kb/recall.mjs` e `kb/ingest.mjs` são a superfície que o driver chama (WLN-17).
 > Enquanto o wiring não chega, a esteira roda só sobre o Linear (como a v1).
 
 ## IDs do Linear (coordenadas da esteira)
@@ -94,7 +98,7 @@ divergência) sem quebrar o sweep.
 
 - Team (atual: "Lane", key DIM): `3c0058ed-759f-4678-b219-4d34d0f533d7`
 - Project (atual: "Auto Lane"): `9a2f315c-8def-4698-ba9a-8d0a680cda13`
-- Épico v3: **DIM-14**
+- Épico v3: **WLN-14**
 
 Status — **cache/fallback (resolvido por nome a cada sweep)** (⚠️ "To Review" reusou o ID do antigo "Done"; "Done" agora é um ID novo):
 - Todo: `c7b52570-af37-4d8e-abd3-95d927cae20c`

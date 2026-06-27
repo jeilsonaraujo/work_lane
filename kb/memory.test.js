@@ -123,7 +123,7 @@ test('ingest persiste chunks + vetores + metadados', async () => {
   const mem = openMemory(':memory:');
   const text = 'palavra '.repeat(200); // garante múltiplos chunks
   const { chunks } = await mem.ingest({
-    ticketId: 'DIM-12',
+    ticketId: 'WLN-12',
     stage: 'execution',
     kind: 'spec',
     source: 'context-spec',
@@ -138,7 +138,7 @@ test('ingest persiste chunks + vetores + metadados', async () => {
   assert.equal(nVec, chunks);
 
   const row = mem.db.prepare('SELECT * FROM chunks ORDER BY id LIMIT 1').get();
-  assert.equal(row.ticket_id, 'DIM-12');
+  assert.equal(row.ticket_id, 'WLN-12');
   assert.equal(row.stage, 'execution');
   assert.equal(row.kind, 'spec');
   assert.equal(row.source, 'context-spec');
@@ -153,7 +153,7 @@ test('ingest é idempotente por source (reingest não duplica, sem órfãos)', a
   const mem = openMemory(':memory:');
   const text = 'palavra '.repeat(200); // múltiplos chunks
   const doc = {
-    ticketId: 'DIM-23',
+    ticketId: 'WLN-23',
     stage: 'execution',
     kind: 'spec',
     source: 'context-spec',
@@ -176,7 +176,7 @@ test('ingest é idempotente por source (reingest não duplica, sem órfãos)', a
 
 test('ingest com source=null não deduplica (contagem cresce)', async () => {
   const mem = openMemory(':memory:');
-  const doc = { ticketId: 'DIM-23', source: null, text: 'sem fonte definida' };
+  const doc = { ticketId: 'WLN-23', source: null, text: 'sem fonte definida' };
 
   await mem.ingest(doc);
   const afterFirst = mem.db.prepare('SELECT COUNT(*) AS n FROM chunks').get().n;
@@ -286,7 +286,7 @@ test('fetch traz o artefato inteiro ordenado por source, chunk_index', async () 
   // doc multi-chunk com source fixo → vários chunk_index sequenciais.
   const text = 'palavra '.repeat(300);
   const { chunks } = await mem.ingest({
-    ticketId: 'DIM-29',
+    ticketId: 'WLN-29',
     stage: 'understand',
     kind: 'spec',
     source: 'context-spec',
@@ -297,9 +297,9 @@ test('fetch traz o artefato inteiro ordenado por source, chunk_index', async () 
   // ruído de outro ticket — não deve aparecer no fetch filtrado.
   await mem.ingest({ ticketId: 'OTHER', kind: 'spec', source: 'noise', text: 'ruído' });
 
-  const res = mem.fetch({ ticket_id: 'DIM-29', kind: 'spec' });
+  const res = mem.fetch({ ticket_id: 'WLN-29', kind: 'spec' });
   assert.equal(res.length, chunks, 'traz TODOS os chunks do artefato');
-  assert.ok(res.every((r) => r.ticket_id === 'DIM-29'), 'só o ticket alvo');
+  assert.ok(res.every((r) => r.ticket_id === 'WLN-29'), 'só o ticket alvo');
   // ordenado por chunk_index asc, cobrindo 0,1,2,...
   for (let i = 0; i < res.length; i++) {
     assert.equal(res[i].chunk_index, i, `chunk_index ${i} em ordem`);
@@ -309,7 +309,7 @@ test('fetch traz o artefato inteiro ordenado por source, chunk_index', async () 
   assert.ok('body' in res[0] && 'source' in res[0], 'mantém chaves do shape');
 
   // LIMIT opcional via k.
-  const limited = mem.fetch({ ticket_id: 'DIM-29', kind: 'spec' }, { k: 2 });
+  const limited = mem.fetch({ ticket_id: 'WLN-29', kind: 'spec' }, { k: 2 });
   assert.equal(limited.length, 2, 'k aplica LIMIT');
   mem.close();
 });
