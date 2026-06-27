@@ -1,9 +1,9 @@
 'use strict';
 
-// Wrapper de teste do smoke e2e (WLN-21): roda e2e_smoke.mjs como subprocesso real,
-// offline (provider fake) sobre um .db temp, e assere as DUAS provas:
-//   - recall: a saída contém o bloco "## 📚 Memória relevante" (memória no prompt);
-//   - ingest: a contagem de chunks CRESCEU (chunk novo na KB).
+// Test wrapper for the e2e smoke (WLN-21): runs e2e_smoke.mjs as a real subprocess,
+// offline (fake provider) over a temp .db, and asserts BOTH proofs:
+//   - recall: the output contains the "## 📚 Relevant memory" block (memory in the prompt);
+//   - ingest: the chunk count GREW (new chunk in the KB).
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -32,22 +32,22 @@ function withTempDb(fn) {
   }
 }
 
-test('e2e_smoke: exit 0, injeta bloco de memória e a KB cresce', () => {
+test('e2e_smoke: exit 0, injects the memory block and the KB grows', () => {
   withTempDb((db) => {
     const res = run(['--fake', '--db', db]);
-    assert.equal(res.status, 0, `smoke deveria sair 0. stderr=${res.stderr}`);
+    assert.equal(res.status, 0, `smoke should exit 0. stderr=${res.stderr}`);
 
-    // Prova de RECALL: o bloco que o driver injeta no prompt aparece na saída.
-    assert.match(res.stdout, /## 📚 Memória relevante/, 'saída contém o bloco de memória');
-    assert.match(res.stdout, /prova de RECALL/, 'saída marca a evidência de recall');
+    // RECALL proof: the block the driver injects into the prompt appears in the output.
+    assert.match(res.stdout, /## 📚 Relevant memory/, 'output contains the memory block');
+    assert.match(res.stdout, /proof of RECALL/, 'output marks the recall evidence');
 
-    // Prova de INGEST: a contagem subiu (antes=X depois=Y, com depois>antes).
-    const m = res.stdout.match(/antes=(\d+)\s+depois=(\d+)/);
-    assert.ok(m, 'saída reporta "antes=X depois=Y"');
+    // INGEST proof: the count went up (before=X after=Y, with after>before).
+    const m = res.stdout.match(/before=(\d+)\s+after=(\d+)/);
+    assert.ok(m, 'output reports "before=X after=Y"');
     const before = Number(m[1]);
     const after = Number(m[2]);
-    assert.ok(after > before, `KB deve crescer: antes=${before} depois=${after}`);
+    assert.ok(after > before, `KB should grow: before=${before} after=${after}`);
 
-    assert.match(res.stdout, /SMOKE OK/, 'smoke conclui com SMOKE OK');
+    assert.match(res.stdout, /SMOKE OK/, 'smoke concludes with SMOKE OK');
   });
 });

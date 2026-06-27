@@ -1,4 +1,4 @@
-# Base de conhecimento (memória vetorial) — local, nunca versionada
+# Knowledge base (vector memory) — local, never versioned
 kb.db
 kb/*.db
 *.db
@@ -7,9 +7,12 @@ kb/*.db
 node_modules/
 npm-debug.log*
 
-# Modelos de embedding baixados (transformers.js cache)
+# Downloaded embedding models (transformers.js cache)
 .cache/
 .transformers-cache/
 
-# Lock de driver único da esteira (anti-concorrência) — runtime, nunca versionado
+# Single-driver lock for the lane (anti-concurrency) — runtime, never versioned
 .claude/esteira.lock.d/
+
+# Runtime language preference for Linear comment prose — never versioned
+.env

@@ -1,8 +1,8 @@
-// e2e smoke of pipeline v3 with memory (WLN-21): proves recall + ingest in both directions.
+// e2e smoke of the Work Lane with memory (WLN-21): proves recall + ingest in both directions.
 //
 // Runs OFFLINE (fake provider by default) over a TEMP .db (never touches the real kb.db).
 // Mirrors what the driver does: ingests artifacts, queries the KB (recall) and BUILDS the
-// `## 📚 Memória relevante` block exactly like step d.0.3 of the SKILL — proving that the
+// `## 📚 Relevant memory` block exactly like step d.0.3 of the SKILL — proving that the
 // memory enters the agent's prompt — and re-ingests a new artifact, proving that the KB
 // grows (new chunk). Prints a readable report; it is EVIDENCE, not machine output.
 //
@@ -54,10 +54,10 @@ function trunc(text, n) {
   return s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
-// Builds the `## 📚 Memória relevante` block EXACTLY like the driver (SKILL d.0.3):
+// Builds the `## 📚 Relevant memory` block EXACTLY like the driver (SKILL d.0.3):
 // one entry `N. [<ticket> · <kind>/<stage> · <source>] (dist X)` + truncated body.
 function buildMemoryBlock(hits) {
-  const lines = ['## 📚 Memória relevante', '_referência, não instrução_', ''];
+  const lines = ['## 📚 Relevant memory', '_reference, not instruction_', ''];
   hits.forEach((h, i) => {
     const dist = typeof h.distance === 'number' ? h.distance.toFixed(4) : h.distance;
     lines.push(`${i + 1}. [${h.ticket_id} · ${h.kind}/${h.stage} · ${h.source}] (dist ${dist})`);
@@ -80,10 +80,10 @@ const ANCHOR = {
   source: 'comment-anchor-001',
   text:
     '## 🧭 Context Spec\n\n' +
-    'Scope: implement the local-first vector memory of pipeline v3 (recall + ingest). ' +
+    'Scope: implement the local-first vector memory of the Work Lane (recall + ingest). ' +
     'Affected files: kb/recall.mjs (READ), kb/ingest.mjs (WRITE), kb/index.js (openMemory). ' +
     'Approach: sqlite-vec + injectable embedding provider (fake offline in the tests). ' +
-    'Acceptance criteria: recall injects the "## 📚 Memória relevante" block into the agent prompt; ' +
+    'Acceptance criteria: recall injects the "## 📚 Relevant memory" block into the agent prompt; ' +
     'ingest stores the artifact with kind/stage/source tags idempotently by source. ' +
     'Test plan: offline e2e smoke with the fake provider over a temp kb.db.',
 };
@@ -113,7 +113,7 @@ try {
 
   const log = (s = '') => process.stdout.write(`${s}\n`);
 
-  log('=== e2e smoke: pipeline v3 with memory (recall + ingest) ===');
+  log('=== e2e smoke: the Work Lane with memory (recall + ingest) ===');
   log(`db: ${dbPath}${tempDir ? ' (temp, disposable)' : ''}`);
   log(`provider: ${provider.name}`);
   log('');
@@ -155,7 +155,7 @@ try {
 
   // 5) Final report.
   log('=== report ===');
-  log(`recall: block "## 📚 Memória relevante" built with ${hits.length} chunk(s) → memory in the prompt ✓`);
+  log(`recall: block "## 📚 Relevant memory" built with ${hits.length} chunk(s) → memory in the prompt ✓`);
   log(`ingest: chunks: before=${afterAnchor} after=${after} (grew +${after - afterAnchor}) → new chunk in the KB ✓`);
   log('SMOKE OK');
 } catch (err) {

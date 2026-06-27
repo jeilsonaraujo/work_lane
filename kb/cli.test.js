@@ -1,9 +1,9 @@
 'use strict';
 
-// Smoke e2e das CLIs recall.mjs / ingest.mjs (WLN-17).
+// e2e smoke of the recall.mjs / ingest.mjs CLIs (WLN-17).
 //
-// Invoca os scripts como subprocessos reais (como o driver faria) e força o
-// provider fake (offline) via --fake + KB_FAKE_EMBEDDINGS, sobre um .db temp.
+// Invokes the scripts as real subprocesses (like the driver would) and forces the
+// fake provider (offline) via --fake + KB_FAKE_EMBEDDINGS, over a temp .db.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -15,7 +15,7 @@ const { spawnSync } = require('node:child_process');
 const RECALL = path.join(__dirname, 'recall.mjs');
 const INGEST = path.join(__dirname, 'ingest.mjs');
 
-// Ambiente offline determinístico para todos os subprocessos.
+// Deterministic offline environment for all subprocesses.
 const FAKE_ENV = { ...process.env, KB_FAKE_EMBEDDINGS: '1' };
 
 function run(script, args, { input } = {}) {
@@ -36,131 +36,131 @@ function withTempDb(fn) {
   }
 }
 
-test('ingest via stdin produz chunks>0 e ids.length === chunks; saída é JSON', () => {
+test('ingest via stdin produces chunks>0 and ids.length === chunks; output is JSON', () => {
   withTempDb((db) => {
     const res = run(INGEST, ['--ticket', 'WLN-17', '--kind', 'doc', '--fake', '--db', db], {
-      input: 'A memória usa sqlite-vec sobre better-sqlite3 com embeddings local-first.',
+      input: 'The memory uses sqlite-vec over better-sqlite3 with local-first embeddings.',
     });
-    assert.equal(res.status, 0, `ingest deveria sair 0. stderr=${res.stderr}`);
+    assert.equal(res.status, 0, `ingest should exit 0. stderr=${res.stderr}`);
 
     let out;
     assert.doesNotThrow(() => {
       out = JSON.parse(res.stdout);
-    }, 'stdout do ingest deve ser JSON parseável');
+    }, 'ingest stdout must be parseable JSON');
 
     assert.ok(out.chunks > 0, 'chunks > 0');
     assert.equal(out.ids.length, out.chunks, 'ids.length === chunks');
   });
 });
 
-test('recall depois do ingest retorna top-1 = texto ingerido; saída é JSON', () => {
+test('recall after ingest returns top-1 = ingested text; output is JSON', () => {
   withTempDb((db) => {
-    const texto = 'O chunking é determinístico por tamanho e overlap.';
-    const ing = run(INGEST, ['--ticket', 'WLN-17', '--fake', '--db', db], { input: texto });
-    assert.equal(ing.status, 0, `ingest deveria sair 0. stderr=${ing.stderr}`);
+    const text = 'Chunking is deterministic by size and overlap.';
+    const ing = run(INGEST, ['--ticket', 'WLN-17', '--fake', '--db', db], { input: text });
+    assert.equal(ing.status, 0, `ingest should exit 0. stderr=${ing.stderr}`);
 
-    const rec = run(RECALL, [texto, '--k', '3', '--fake', '--db', db]);
-    assert.equal(rec.status, 0, `recall deveria sair 0. stderr=${rec.stderr}`);
+    const rec = run(RECALL, [text, '--k', '3', '--fake', '--db', db]);
+    assert.equal(rec.status, 0, `recall should exit 0. stderr=${rec.stderr}`);
 
     let results;
     assert.doesNotThrow(() => {
       results = JSON.parse(rec.stdout);
-    }, 'stdout do recall deve ser JSON parseável');
+    }, 'recall stdout must be parseable JSON');
 
-    assert.ok(Array.isArray(results), 'recall retorna array');
-    assert.ok(results.length > 0, 'recall retorna ao menos 1 resultado');
-    assert.equal(results[0].body, texto, 'top-1 é o texto ingerido');
-    assert.equal(results[0].ticket_id, 'WLN-17', 'metadado ticket_id presente');
+    assert.ok(Array.isArray(results), 'recall returns an array');
+    assert.ok(results.length > 0, 'recall returns at least 1 result');
+    assert.equal(results[0].body, text, 'top-1 is the ingested text');
+    assert.equal(results[0].ticket_id, 'WLN-17', 'ticket_id metadata present');
   });
 });
 
-test('recall com --ticket filtra por ticket_id', () => {
+test('recall with --ticket filters by ticket_id', () => {
   withTempDb((db) => {
-    run(INGEST, ['--ticket', 'AAA-1', '--fake', '--db', db], { input: 'alpha um dois tres' });
-    run(INGEST, ['--ticket', 'BBB-2', '--fake', '--db', db], { input: 'beta quatro cinco seis' });
+    run(INGEST, ['--ticket', 'AAA-1', '--fake', '--db', db], { input: 'alpha one two three' });
+    run(INGEST, ['--ticket', 'BBB-2', '--fake', '--db', db], { input: 'beta four five six' });
 
-    const rec = run(RECALL, ['qualquer consulta', '--ticket', 'AAA-1', '--fake', '--db', db]);
-    assert.equal(rec.status, 0, `recall deveria sair 0. stderr=${rec.stderr}`);
+    const rec = run(RECALL, ['any query', '--ticket', 'AAA-1', '--fake', '--db', db]);
+    assert.equal(rec.status, 0, `recall should exit 0. stderr=${rec.stderr}`);
     const results = JSON.parse(rec.stdout);
-    assert.ok(results.length > 0, 'há resultados para AAA-1');
+    assert.ok(results.length > 0, 'there are results for AAA-1');
     for (const r of results) {
-      assert.equal(r.ticket_id, 'AAA-1', 'todos os resultados são do ticket filtrado');
+      assert.equal(r.ticket_id, 'AAA-1', 'all results are from the filtered ticket');
     }
   });
 });
 
-test('ingest com stdin vazio retorna {chunks:0, ids:[]} (não é erro)', () => {
+test('ingest with empty stdin returns {chunks:0, ids:[]} (not an error)', () => {
   withTempDb((db) => {
     const res = run(INGEST, ['--ticket', 'WLN-17', '--fake', '--db', db], { input: '' });
-    assert.equal(res.status, 0, `ingest vazio deveria sair 0. stderr=${res.stderr}`);
+    assert.equal(res.status, 0, `empty ingest should exit 0. stderr=${res.stderr}`);
     const out = JSON.parse(res.stdout);
     assert.equal(out.chunks, 0);
     assert.deepEqual(out.ids, []);
   });
 });
 
-test('ingest sem --ticket sai com código != 0 e stderr não-vazio', () => {
-  const res = run(INGEST, ['--fake'], { input: 'qualquer texto' });
-  assert.notEqual(res.status, 0, 'deve falhar sem --ticket');
-  assert.ok(res.stderr.trim().length > 0, 'stderr não-vazio');
-  assert.equal(res.stdout.trim(), '', 'nada de JSON em stdout no erro');
+test('ingest without --ticket exits with code != 0 and non-empty stderr', () => {
+  const res = run(INGEST, ['--fake'], { input: 'any text' });
+  assert.notEqual(res.status, 0, 'must fail without --ticket');
+  assert.ok(res.stderr.trim().length > 0, 'non-empty stderr');
+  assert.equal(res.stdout.trim(), '', 'no JSON in stdout on error');
 });
 
-test('recall sem query posicional sai com código != 0 e stderr não-vazio', () => {
+test('recall without positional query exits with code != 0 and non-empty stderr', () => {
   withTempDb((db) => {
     const res = run(RECALL, ['--fake', '--db', db]);
-    assert.notEqual(res.status, 0, 'deve falhar sem query');
-    assert.ok(res.stderr.trim().length > 0, 'stderr não-vazio');
+    assert.notEqual(res.status, 0, 'must fail without query');
+    assert.ok(res.stderr.trim().length > 0, 'non-empty stderr');
   });
 });
 
-test('recall --exact (sem --k) retorna o artefato INTEIRO mesmo com >5 chunks', () => {
+test('recall --exact (without --k) returns the WHOLE artifact even with >5 chunks', () => {
   withTempDb((db) => {
-    // Texto longo o bastante p/ > 5 chunks (size=512/step=448): ~5.5k chars ⇒ ~13 chunks.
-    // Crucial: se o CLI aplicasse o antigo default --k=5, isto truncaria em 5 e o
-    // assert results.length === chunks falharia — exatamente o bug reprovado.
-    const spec = 'criterio de aceite do recall hibrido '.repeat(150);
+    // Text long enough for > 5 chunks (size=512/step=448): ~5.5k chars ⇒ ~13 chunks.
+    // Crucial: if the CLI applied the old default --k=5, this would truncate at 5 and the
+    // assert results.length === chunks would fail — exactly the rejected bug.
+    const spec = 'acceptance criterion of the hybrid recall '.repeat(150);
     const ing = run(
       INGEST,
       ['--ticket', 'WLN-29', '--kind', 'spec', '--source', 'spec-1', '--fake', '--db', db],
       { input: spec }
     );
-    assert.equal(ing.status, 0, `ingest deveria sair 0. stderr=${ing.stderr}`);
+    assert.equal(ing.status, 0, `ingest should exit 0. stderr=${ing.stderr}`);
     const ingOut = JSON.parse(ing.stdout);
-    assert.ok(ingOut.chunks > 5, `spec precisa de >5 chunks p/ provar o fix (got ${ingOut.chunks})`);
+    assert.ok(ingOut.chunks > 5, `spec needs >5 chunks to prove the fix (got ${ingOut.chunks})`);
 
-    // --exact SEM --k e SEM query posicional → status 0 + array JSON completo.
+    // --exact WITHOUT --k and WITHOUT positional query → status 0 + full JSON array.
     const rec = run(RECALL, ['--exact', '--ticket', 'WLN-29', '--kind', 'spec', '--fake', '--db', db]);
-    assert.equal(rec.status, 0, `recall --exact deveria sair 0. stderr=${rec.stderr}`);
+    assert.equal(rec.status, 0, `recall --exact should exit 0. stderr=${rec.stderr}`);
     const results = JSON.parse(rec.stdout);
-    assert.ok(Array.isArray(results), 'retorna array');
-    assert.equal(results.length, ingOut.chunks, 'traz TODOS os chunks do spec (sem LIMIT 5)');
+    assert.ok(Array.isArray(results), 'returns an array');
+    assert.equal(results.length, ingOut.chunks, 'brings ALL chunks of the spec (no LIMIT 5)');
     for (let i = 0; i < results.length; i++) {
-      assert.equal(results[i].chunk_index, i, 'ordenado por chunk_index');
-      assert.equal(results[i].ticket_id, 'WLN-29', 'só o ticket alvo');
-      assert.equal(results[i].distance, null, 'sem distância (fetch direto)');
+      assert.equal(results[i].chunk_index, i, 'ordered by chunk_index');
+      assert.equal(results[i].ticket_id, 'WLN-29', 'only the target ticket');
+      assert.equal(results[i].distance, null, 'no distance (direct fetch)');
     }
   });
 });
 
-test('recall --exact --k N aplica o limite explícito (override continua valendo)', () => {
+test('recall --exact --k N applies the explicit limit (override still holds)', () => {
   withTempDb((db) => {
-    const spec = 'criterio de aceite do recall hibrido '.repeat(150);
+    const spec = 'acceptance criterion of the hybrid recall '.repeat(150);
     const ing = run(
       INGEST,
       ['--ticket', 'WLN-29', '--kind', 'spec', '--source', 'spec-1', '--fake', '--db', db],
       { input: spec }
     );
-    assert.equal(ing.status, 0, `ingest deveria sair 0. stderr=${ing.stderr}`);
+    assert.equal(ing.status, 0, `ingest should exit 0. stderr=${ing.stderr}`);
     const ingOut = JSON.parse(ing.stdout);
-    assert.ok(ingOut.chunks > 3, 'precisa de mais chunks que o limite p/ provar o corte');
+    assert.ok(ingOut.chunks > 3, 'needs more chunks than the limit to prove the cut');
 
     const rec = run(
       RECALL,
       ['--exact', '--ticket', 'WLN-29', '--kind', 'spec', '--k', '3', '--fake', '--db', db]
     );
-    assert.equal(rec.status, 0, `recall --exact --k 3 deveria sair 0. stderr=${rec.stderr}`);
+    assert.equal(rec.status, 0, `recall --exact --k 3 should exit 0. stderr=${rec.stderr}`);
     const results = JSON.parse(rec.stdout);
-    assert.equal(results.length, 3, '--k 3 limita o fetch a 3 chunks');
+    assert.equal(results.length, 3, '--k 3 limits the fetch to 3 chunks');
   });
 });

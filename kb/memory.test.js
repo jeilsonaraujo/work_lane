@@ -13,34 +13,34 @@ const { FakeEmbeddingProvider, createProvider } = require('./embeddings');
 const { openMemory } = require('./index');
 
 // ---------------------------------------------------------------------------
-// Migrations: do zero + idempotência (in-memory).
+// Migrations: from scratch + idempotence (in-memory).
 // ---------------------------------------------------------------------------
-test('migrate cria schema e é idempotente (in-memory)', () => {
+test('migrate creates schema and is idempotent (in-memory)', () => {
   const db = openDb(':memory:');
   const first = migrate(db);
-  assert.ok(first.includes('001_init'), 'aplica 001_init na 1ª vez');
+  assert.ok(first.includes('001_init'), 'applies 001_init on the 1st run');
 
   const second = migrate(db);
-  assert.deepEqual(second, [], '2ª chamada não reaplica nada');
+  assert.deepEqual(second, [], '2nd call reapplies nothing');
 
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
     .all()
     .map((r) => r.name);
-  assert.ok(tables.includes('chunks'), 'tabela chunks existe');
-  assert.ok(tables.includes('vec_chunks'), 'tabela virtual vec_chunks existe');
-  assert.ok(tables.includes('schema_migrations'), 'schema_migrations existe');
+  assert.ok(tables.includes('chunks'), 'chunks table exists');
+  assert.ok(tables.includes('vec_chunks'), 'virtual table vec_chunks exists');
+  assert.ok(tables.includes('schema_migrations'), 'schema_migrations exists');
 
-  // só um registro de migration
+  // only one migration record
   const count = db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get().n;
   assert.equal(count, 1);
   db.close();
 });
 
 // ---------------------------------------------------------------------------
-// Migrations idempotentes ao reabrir conexão sobre arquivo.
+// Migrations idempotent when reopening the connection over a file.
 // ---------------------------------------------------------------------------
-test('migrate idempotente reabrindo arquivo', () => {
+test('migrate idempotent when reopening file', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-test-'));
   const file = path.join(dir, 'mem.db');
   try {
@@ -49,7 +49,7 @@ test('migrate idempotente reabrindo arquivo', () => {
     db1.close();
 
     const db2 = openDb(file);
-    assert.deepEqual(migrate(db2), [], 'nada reaplicado na reabertura');
+    assert.deepEqual(migrate(db2), [], 'nothing reapplied on reopen');
     db2.close();
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -57,9 +57,9 @@ test('migrate idempotente reabrindo arquivo', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Carga da extensão sqlite-vec.
+// Loading the sqlite-vec extension.
 // ---------------------------------------------------------------------------
-test('extensão sqlite-vec carregada (vec_version)', () => {
+test('sqlite-vec extension loaded (vec_version)', () => {
   const db = openDb(':memory:');
   const v = db.prepare('SELECT vec_version() AS v').get().v;
   assert.equal(typeof v, 'string');
@@ -68,60 +68,60 @@ test('extensão sqlite-vec carregada (vec_version)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Chunking determinístico.
+// Deterministic chunking.
 // ---------------------------------------------------------------------------
-test('chunking: texto curto vira 1 chunk', () => {
-  assert.deepEqual(chunkText('oi mundo'), ['oi mundo']);
+test('chunking: short text becomes 1 chunk', () => {
+  assert.deepEqual(chunkText('hello world'), ['hello world']);
 });
 
-test('chunking: vazio/whitespace vira []', () => {
+test('chunking: empty/whitespace becomes []', () => {
   assert.deepEqual(chunkText(''), []);
   assert.deepEqual(chunkText('   \n  '), []);
 });
 
-test('chunking: texto longo vira N chunks com overlap e é determinístico', () => {
+test('chunking: long text becomes N chunks with overlap and is deterministic', () => {
   const text = 'a'.repeat(1000) + 'b'.repeat(1000);
   const a = chunkText(text, { size: 300, overlap: 50 });
   const b = chunkText(text, { size: 300, overlap: 50 });
-  assert.ok(a.length > 1, 'gera vários chunks');
-  assert.deepEqual(a, b, 'mesmo input → mesmo output');
+  assert.ok(a.length > 1, 'generates several chunks');
+  assert.deepEqual(a, b, 'same input → same output');
 
-  // overlap: o fim de um chunk reaparece no início do próximo.
+  // overlap: the end of one chunk reappears at the start of the next.
   const step = 300 - 50;
   assert.equal(a[1], text.slice(step, step + 300));
 });
 
 // ---------------------------------------------------------------------------
-// Provider fake: determinismo + dimensão.
+// Fake provider: determinism + dimension.
 // ---------------------------------------------------------------------------
-test('FakeEmbeddingProvider: determinístico, dim e normalizado', async () => {
+test('FakeEmbeddingProvider: deterministic, dim and normalized', async () => {
   const p = new FakeEmbeddingProvider();
   assert.equal(p.dim, EMBED_DIM);
 
-  const [v1] = await p.embed(['contexto da memória']);
-  const [v2] = await p.embed(['contexto da memória']);
-  const [v3] = await p.embed(['outro texto distinto']);
+  const [v1] = await p.embed(['memory context']);
+  const [v2] = await p.embed(['memory context']);
+  const [v3] = await p.embed(['another distinct text']);
 
   assert.equal(v1.length, EMBED_DIM);
-  assert.deepEqual(Array.from(v1), Array.from(v2), 'mesmo texto → mesmo vetor');
-  assert.notDeepEqual(Array.from(v1), Array.from(v3), 'textos diferentes → vetores diferentes');
+  assert.deepEqual(Array.from(v1), Array.from(v2), 'same text → same vector');
+  assert.notDeepEqual(Array.from(v1), Array.from(v3), 'different texts → different vectors');
 
   const norm = Math.sqrt(Array.from(v1).reduce((s, x) => s + x * x, 0));
-  assert.ok(Math.abs(norm - 1) < 1e-5, 'vetor normalizado');
+  assert.ok(Math.abs(norm - 1) < 1e-5, 'normalized vector');
 });
 
-test('createProvider default é fake', () => {
+test('createProvider default is fake', () => {
   const p = createProvider();
   assert.equal(p.name, 'fake');
   assert.equal(p.dim, EMBED_DIM);
 });
 
 // ---------------------------------------------------------------------------
-// Ingestão: linhas em chunks == vec_chunks == nº de chunks; metadados.
+// Ingestion: rows in chunks == vec_chunks == number of chunks; metadata.
 // ---------------------------------------------------------------------------
-test('ingest persiste chunks + vetores + metadados', async () => {
+test('ingest persists chunks + vectors + metadata', async () => {
   const mem = openMemory(':memory:');
-  const text = 'palavra '.repeat(200); // garante múltiplos chunks
+  const text = 'word '.repeat(200); // ensures multiple chunks
   const { chunks } = await mem.ingest({
     ticketId: 'WLN-12',
     stage: 'execution',
@@ -147,11 +147,11 @@ test('ingest persiste chunks + vetores + metadados', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Idempotência por `source`: reingest substitui em vez de duplicar.
+// Idempotence by `source`: reingest replaces instead of duplicating.
 // ---------------------------------------------------------------------------
-test('ingest é idempotente por source (reingest não duplica, sem órfãos)', async () => {
+test('ingest is idempotent by source (reingest does not duplicate, no orphans)', async () => {
   const mem = openMemory(':memory:');
-  const text = 'palavra '.repeat(200); // múltiplos chunks
+  const text = 'word '.repeat(200); // multiple chunks
   const doc = {
     ticketId: 'WLN-23',
     stage: 'execution',
@@ -162,81 +162,81 @@ test('ingest é idempotente por source (reingest não duplica, sem órfãos)', a
   };
 
   const first = await mem.ingest(doc);
-  assert.ok(first.chunks > 1, 'primeira ingestão gera vários chunks');
+  assert.ok(first.chunks > 1, 'first ingestion generates several chunks');
 
-  const second = await mem.ingest(doc); // mesmo source + mesmo texto
-  assert.equal(second.chunks, first.chunks, 'reingest gera o mesmo nº de chunks');
+  const second = await mem.ingest(doc); // same source + same text
+  assert.equal(second.chunks, first.chunks, 'reingest generates the same number of chunks');
 
   const nChunks = mem.db.prepare('SELECT COUNT(*) AS n FROM chunks').get().n;
   const nVec = mem.db.prepare('SELECT COUNT(*) AS n FROM vec_chunks').get().n;
-  assert.equal(nChunks, first.chunks, 'COUNT(chunks) não cresce no reingest');
-  assert.equal(nChunks, nVec, 'sem órfãos: chunks == vec_chunks');
+  assert.equal(nChunks, first.chunks, 'COUNT(chunks) does not grow on reingest');
+  assert.equal(nChunks, nVec, 'no orphans: chunks == vec_chunks');
   mem.close();
 });
 
-test('ingest com source=null não deduplica (contagem cresce)', async () => {
+test('ingest with source=null does not deduplicate (count grows)', async () => {
   const mem = openMemory(':memory:');
-  const doc = { ticketId: 'WLN-23', source: null, text: 'sem fonte definida' };
+  const doc = { ticketId: 'WLN-23', source: null, text: 'no source defined' };
 
   await mem.ingest(doc);
   const afterFirst = mem.db.prepare('SELECT COUNT(*) AS n FROM chunks').get().n;
   await mem.ingest(doc);
   const afterSecond = mem.db.prepare('SELECT COUNT(*) AS n FROM chunks').get().n;
 
-  assert.equal(afterSecond, afterFirst * 2, 'source=null acumula (sem dedup)');
+  assert.equal(afterSecond, afterFirst * 2, 'source=null accumulates (no dedup)');
   const nVec = mem.db.prepare('SELECT COUNT(*) AS n FROM vec_chunks').get().n;
-  assert.equal(afterSecond, nVec, 'sem órfãos mesmo com source=null');
+  assert.equal(afterSecond, nVec, 'no orphans even with source=null');
   mem.close();
 });
 
-test('reingest de uma source não afeta outras sources nem source IS NULL', async () => {
+test('reingest of one source does not affect other sources nor source IS NULL', async () => {
   const mem = openMemory(':memory:');
-  await mem.ingest({ ticketId: 'A', source: 'src-a', text: 'conteúdo da fonte A' });
-  await mem.ingest({ ticketId: 'B', source: 'src-b', text: 'conteúdo da fonte B' });
-  await mem.ingest({ ticketId: 'N', source: null, text: 'conteúdo sem fonte' });
+  await mem.ingest({ ticketId: 'A', source: 'src-a', text: 'content of source A' });
+  await mem.ingest({ ticketId: 'B', source: 'src-b', text: 'content of source B' });
+  await mem.ingest({ ticketId: 'N', source: null, text: 'content with no source' });
 
   const countBy = (where, ...args) =>
     mem.db.prepare(`SELECT COUNT(*) AS n FROM chunks WHERE ${where}`).get(...args).n;
   const bBefore = countBy('source = ?', 'src-b');
   const nullBefore = countBy('source IS NULL');
 
-  // reingest só de src-a
-  await mem.ingest({ ticketId: 'A', source: 'src-a', text: 'conteúdo da fonte A' });
+  // reingest only src-a
+  await mem.ingest({ ticketId: 'A', source: 'src-a', text: 'content of source A' });
 
-  assert.equal(countBy('source = ?', 'src-a'), 1, 'src-a não duplicou');
-  assert.equal(countBy('source = ?', 'src-b'), bBefore, 'src-b intacta');
-  assert.equal(countBy('source IS NULL'), nullBefore, 'source IS NULL intacta');
+  assert.equal(countBy('source = ?', 'src-a'), 1, 'src-a did not duplicate');
+  assert.equal(countBy('source = ?', 'src-b'), bBefore, 'src-b intact');
+  assert.equal(countBy('source IS NULL'), nullBefore, 'source IS NULL intact');
 
   const nChunks = mem.db.prepare('SELECT COUNT(*) AS n FROM chunks').get().n;
   const nVec = mem.db.prepare('SELECT COUNT(*) AS n FROM vec_chunks').get().n;
-  assert.equal(nChunks, nVec, 'sem órfãos após reingest isolado');
+  assert.equal(nChunks, nVec, 'no orphans after isolated reingest');
   mem.close();
 });
 
 // ---------------------------------------------------------------------------
-// Query por similaridade: recupera o chunk esperado como top-1, respeita k.
+// Similarity query: retrieves the expected chunk as top-1, respects k.
 // ---------------------------------------------------------------------------
-test('query retorna top-k por similaridade respeitando k', async () => {
+test('query returns top-k by similarity respecting k', async () => {
   const mem = openMemory(':memory:');
   const docs = [
-    { ticketId: 'T1', text: 'gato preto dorme no sofá' },
-    { ticketId: 'T2', text: 'arquitetura de microserviços com filas' },
-    { ticketId: 'T3', text: 'receita de bolo de cenoura' },
-    { ticketId: 'T4', text: 'banco de dados vetorial sqlite' },
+    { ticketId: 'T1', text: 'black cat sleeps on the couch' },
+    { ticketId: 'T2', text: 'microservices architecture with queues' },
+    { ticketId: 'T3', text: 'carrot cake recipe' },
+    { ticketId: 'T4', text: 'sqlite vector database' },
   ];
   await mem.ingestBatch(docs);
 
-  // texto idêntico ao de T2 → fake produz o MESMO vetor → distância ~0 → top-1.
-  const res = await mem.query('arquitetura de microserviços com filas', { k: 2 });
-  assert.equal(res.length, 2, 'respeita k');
-  assert.equal(res[0].ticket_id, 'T2', 'top-1 é o chunk esperado');
+  // text identical to T2 → fake produces the SAME vector → distance ~0 → top-1.
+  const res = await mem.query('microservices architecture with queues', { k: 2 });
+  assert.equal(res.length, 2, 'respects k');
+  assert.equal(res[0].ticket_id, 'T2', 'top-1 is the expected chunk');
   mem.close();
 });
 
 // ---------------------------------------------------------------------------
-// Ranking por distance ascendente.
+// Ranking by ascending distance.
 // ---------------------------------------------------------------------------
-test('query ordena por distance ascendente', async () => {
+test('query orders by ascending distance', async () => {
   const mem = openMemory(':memory:');
   await mem.ingestBatch([
     { ticketId: 'A', text: 'alpha beta gamma' },
@@ -245,46 +245,46 @@ test('query ordena por distance ascendente', async () => {
   ]);
   const res = await mem.query('alpha beta gamma', { k: 3 });
   for (let i = 1; i < res.length; i++) {
-    assert.ok(res[i - 1].distance <= res[i].distance, 'distância não-decrescente');
+    assert.ok(res[i - 1].distance <= res[i].distance, 'non-decreasing distance');
   }
   mem.close();
 });
 
 // ---------------------------------------------------------------------------
-// Query híbrida: filtro de metadados exclui chunks fora do escopo.
+// Hybrid query: metadata filter excludes out-of-scope chunks.
 // ---------------------------------------------------------------------------
-test('query híbrida filtra por ticket/stage/kind', async () => {
+test('hybrid query filters by ticket/stage/kind', async () => {
   const mem = openMemory(':memory:');
   await mem.ingestBatch([
-    { ticketId: 'T1', stage: 'review', kind: 'note', text: 'mesmo conteúdo compartilhado' },
-    { ticketId: 'T2', stage: 'execution', kind: 'spec', text: 'mesmo conteúdo compartilhado' },
-    { ticketId: 'T2', stage: 'review', kind: 'note', text: 'mesmo conteúdo compartilhado' },
+    { ticketId: 'T1', stage: 'review', kind: 'note', text: 'same shared content' },
+    { ticketId: 'T2', stage: 'execution', kind: 'spec', text: 'same shared content' },
+    { ticketId: 'T2', stage: 'review', kind: 'note', text: 'same shared content' },
   ]);
 
-  const byTicket = await mem.query('mesmo conteúdo compartilhado', {
+  const byTicket = await mem.query('same shared content', {
     filter: { ticket_id: 'T2' },
     k: 10,
   });
   assert.ok(byTicket.length > 0);
-  assert.ok(byTicket.every((r) => r.ticket_id === 'T2'), 'só T2');
+  assert.ok(byTicket.every((r) => r.ticket_id === 'T2'), 'only T2');
 
-  const byStageKind = await mem.query('mesmo conteúdo compartilhado', {
+  const byStageKind = await mem.query('same shared content', {
     filter: { ticket_id: 'T2', stage: 'execution', kind: 'spec' },
     k: 10,
   });
-  assert.equal(byStageKind.length, 1, 'só o chunk T2/execution/spec');
+  assert.equal(byStageKind.length, 1, 'only the T2/execution/spec chunk');
   assert.equal(byStageKind[0].stage, 'execution');
   assert.equal(byStageKind[0].kind, 'spec');
   mem.close();
 });
 
 // ---------------------------------------------------------------------------
-// fetch: recuperação direta por metadado (sem KNN) traz o artefato inteiro.
+// fetch: direct retrieval by metadata (no KNN) brings the whole artifact.
 // ---------------------------------------------------------------------------
-test('fetch traz o artefato inteiro ordenado por source, chunk_index', async () => {
+test('fetch brings the whole artifact ordered by source, chunk_index', async () => {
   const mem = openMemory(':memory:');
-  // doc multi-chunk com source fixo → vários chunk_index sequenciais.
-  const text = 'palavra '.repeat(300);
+  // multi-chunk doc with fixed source → several sequential chunk_index.
+  const text = 'word '.repeat(300);
   const { chunks } = await mem.ingest({
     ticketId: 'WLN-29',
     stage: 'understand',
@@ -293,62 +293,62 @@ test('fetch traz o artefato inteiro ordenado por source, chunk_index', async () 
     text,
     chunkOpts: { size: 200, overlap: 40 },
   });
-  assert.ok(chunks > 2, 'gera vários chunks');
-  // ruído de outro ticket — não deve aparecer no fetch filtrado.
-  await mem.ingest({ ticketId: 'OTHER', kind: 'spec', source: 'noise', text: 'ruído' });
+  assert.ok(chunks > 2, 'generates several chunks');
+  // noise from another ticket — must not appear in the filtered fetch.
+  await mem.ingest({ ticketId: 'OTHER', kind: 'spec', source: 'noise', text: 'noise' });
 
   const res = mem.fetch({ ticket_id: 'WLN-29', kind: 'spec' });
-  assert.equal(res.length, chunks, 'traz TODOS os chunks do artefato');
-  assert.ok(res.every((r) => r.ticket_id === 'WLN-29'), 'só o ticket alvo');
-  // ordenado por chunk_index asc, cobrindo 0,1,2,...
+  assert.equal(res.length, chunks, 'brings ALL chunks of the artifact');
+  assert.ok(res.every((r) => r.ticket_id === 'WLN-29'), 'only the target ticket');
+  // ordered by chunk_index asc, covering 0,1,2,...
   for (let i = 0; i < res.length; i++) {
-    assert.equal(res[i].chunk_index, i, `chunk_index ${i} em ordem`);
+    assert.equal(res[i].chunk_index, i, `chunk_index ${i} in order`);
   }
-  // sem embedding/distância — shape compatível com query.
-  assert.ok(res.every((r) => r.distance === null), 'distance é null');
-  assert.ok('body' in res[0] && 'source' in res[0], 'mantém chaves do shape');
+  // no embedding/distance — shape compatible with query.
+  assert.ok(res.every((r) => r.distance === null), 'distance is null');
+  assert.ok('body' in res[0] && 'source' in res[0], 'keeps the shape keys');
 
-  // LIMIT opcional via k.
+  // optional LIMIT via k.
   const limited = mem.fetch({ ticket_id: 'WLN-29', kind: 'spec' }, { k: 2 });
-  assert.equal(limited.length, 2, 'k aplica LIMIT');
+  assert.equal(limited.length, 2, 'k applies LIMIT');
   mem.close();
 });
 
 // ---------------------------------------------------------------------------
-// knnK adaptativo: filtro seletivo não esvazia o resultado quando há match.
+// Adaptive knnK: a selective filter does not empty the result when there is a match.
 // ---------------------------------------------------------------------------
-test('KNN filtrado não vem vazio com match (knnK adaptativo)', async () => {
+test('filtered KNN does not come back empty with a match (adaptive knnK)', async () => {
   const mem = openMemory(':memory:');
-  // 1 chunk alvo + muito ruído de outros tickets (mais que 4*k vizinhos),
-  // de modo que o alvo NÃO estaria na janela 4*k se ela não fosse ampliada.
-  await mem.ingest({ ticketId: 'ALVO', kind: 'spec', text: 'documento alvo distinto' });
+  // 1 target chunk + lots of noise from other tickets (more than 4*k neighbors),
+  // such that the target would NOT be in the 4*k window if it were not widened.
+  await mem.ingest({ ticketId: 'TARGET', kind: 'spec', text: 'distinct target document' });
   for (let i = 0; i < 50; i++) {
-    await mem.ingest({ ticketId: `RUIDO-${i}`, kind: 'spec', text: `ruido numero ${i}` });
+    await mem.ingest({ ticketId: `NOISE-${i}`, kind: 'spec', text: `noise number ${i}` });
   }
 
-  // query irrelevante ao alvo + filtro seletivo no ticket alvo → ainda acha.
-  const hit = await mem.query('consulta qualquer sem relação', {
-    filter: { ticket_id: 'ALVO' },
+  // query unrelated to the target + selective filter on the target ticket → still finds it.
+  const hit = await mem.query('any unrelated query', {
+    filter: { ticket_id: 'TARGET' },
     k: 2,
   });
-  assert.ok(hit.length > 0, 'filtro seletivo com match não retorna []');
-  assert.ok(hit.every((r) => r.ticket_id === 'ALVO'), 'só o ticket alvo');
+  assert.ok(hit.length > 0, 'selective filter with a match does not return []');
+  assert.ok(hit.every((r) => r.ticket_id === 'TARGET'), 'only the target ticket');
 
-  // match inexistente → [].
-  const miss = await mem.query('consulta qualquer', {
-    filter: { ticket_id: 'NAO-EXISTE' },
+  // nonexistent match → [].
+  const miss = await mem.query('any query', {
+    filter: { ticket_id: 'DOES-NOT-EXIST' },
     k: 2,
   });
-  assert.deepEqual(miss, [], 'ticket inexistente → []');
+  assert.deepEqual(miss, [], 'nonexistent ticket → []');
   mem.close();
 });
 
 // ---------------------------------------------------------------------------
-// Isolamento: a suíte não carrega transformers (sem rede).
+// Isolation: the suite does not load transformers (no network).
 // ---------------------------------------------------------------------------
-test('transformers.js NÃO foi carregado pela suíte', () => {
+test('transformers.js was NOT loaded by the suite', () => {
   const loaded = Object.keys(require.cache).some((p) =>
     p.includes(path.join('@huggingface', 'transformers'))
   );
-  assert.equal(loaded, false, 'provider real não deve ser importado nos testes');
+  assert.equal(loaded, false, 'the real provider must not be imported in the tests');
 });

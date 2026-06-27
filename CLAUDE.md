@@ -1,146 +1,156 @@
-# Esteira de Tasks v3 (Loop Engineering)
+# Work Lane
 
-Pipeline autônomo onde tickets do Linear fluem por estações, cada uma com um agente
-responsável. Inspirado em "Loop Engineering": você não dá prompt ticket-a-ticket —
-você projeta o sistema (a esteira) que faz isso.
+Autonomous task pipeline where Linear tickets flow through stations, each one driven by a
+responsible agent. Loop-Engineering philosophy: you don't prompt ticket-by-ticket — you
+design the system (the lane) that does it for you.
 
-**O Linear é o board / fonte de verdade.** Uma base de conhecimento vetorial local
-(`kb/`) dá contexto e memória aos agentes. Nenhum serviço próprio a deployar.
+**Linear is the board / source of truth.** A local vector knowledge base (`kb/`) gives the
+agents context and memory. No service of your own to deploy.
 
-## Como funciona
+## How it works
 
-- **Board**: projeto **Auto Lane** no Linear (time `Lane`/`DIM`). Identifique **por ID** —
-  os nomes podem mudar (ver IDs abaixo).
-- **Colunas (status)**: `Todo` → `In Progress` → `To Review` → `Done` (+ `Backlog`, `Canceled`).
-- **Estações**: dentro de `In Progress`, um label do grupo `stage` diz a sub-estação (understand/execution/review/blocked).
-- **Driver**: o skill `/esteira` faz UMA varredura. `/loop /esteira` roda em loop (heartbeat).
-- **Gate humano**: só a **saída** (`To Review` → `Done`). A entrada é automática.
-- **Auto-sequência (pull):** a esteira é WIP=1 e **se mantém ocupada**. Sempre que não há
-  ticket ativo e existe um `Todo` elegível (todos os `blockedBy` já **integrados** = em
-  `To Review` ou `Done`), ela puxa sozinha o próximo — **sem** esperar gate humano de entrada.
-  Tickets em `To Review`/`blocked` esperam humano mas não ocupam a vaga. Detalhe no skill `/esteira`.
-- **Um driver por vez:** cada sweep adquire um lock de exclusão mútua
-  (`.claude/esteira.lock.d/`, `mkdir` atômico, TTL 30min) antes de tocar no Linear e o
-  libera no fim. Dois `/esteira` simultâneos não furam o WIP=1 — o 2º aborta silenciosamente.
+- **Board**: project **Auto Lane** in Linear (team `Lane`/`DIM`). Identify it **by ID** —
+  names may change (see IDs below).
+- **Columns (status)**: `Todo` → `In Progress` → `To Review` → `Done` (+ `Backlog`, `Canceled`).
+- **Stations**: inside `In Progress`, a label from the `stage` group tells the sub-station (understand/execution/review/blocked).
+- **Driver**: the `/lane` skill does ONE sweep. `/loop /lane` runs in a loop (heartbeat).
+- **Human gate**: only the **exit** (`To Review` → `Done`). Entry is automatic.
+- **Auto-sequence (pull):** the lane is WIP=1 and **keeps itself busy**. Whenever there is no
+  active ticket and an eligible `Todo` exists (all its `blockedBy` already **integrated** = in
+  `To Review` or `Done`), it pulls the next one on its own — **without** waiting for a human entry gate.
+  Tickets in `To Review`/`blocked` wait for a human but don't occupy the slot. Details in the `/lane` skill.
+- **One driver at a time:** each sweep acquires a mutual-exclusion lock
+  (`.claude/esteira.lock.d/`, atomic `mkdir`, TTL 30min) before touching Linear and
+  releases it at the end. Two simultaneous `/lane` runs don't break WIP=1 — the 2nd aborts silently.
 
-## Máquina de estados
+## State machine
 
-**Fonte de verdade = ARTEFATOS (comentários), não o label.** O label `stage:*` é só
-espelho. O driver deriva o estágio dos comentários do ticket, então um label perdido
-ou errado nunca causa regressão/retrabalho. "Sem label" ≠ "novo"; novo = sem artefato.
+**Source of truth = ARTIFACTS (comments), not the label.** The `stage:*` label is just a
+mirror. The driver derives the stage from the ticket's comments, so a lost or wrong label
+never causes regression/rework. "No label" ≠ "new"; new = no artifact.
 
-Estágio derivado (mais recente → mais antigo):
+Derived stage (most recent → oldest):
 ```
-Kick-back (⛔)          → invalida artefatos < createdAt do kick-back; reverte merge + reabre em understand (cap 2 → blocked)
-Review APPROVED        → integra + move p/ status `To Review` (gate humano)
+Kick-back (⛔)          → invalidates artifacts < the kick-back's createdAt; reverts merge + reopens at understand (cap 2 → blocked)
+Review APPROVED        → integrate + move to status `To Review` (human gate)
 Review REJECTED (<3)   → execution  | (>=3) → blocked
 Work Log SUCCESS       → review
 Work Log FAILED        → blocked
-Context Spec (s/ block)→ execution  | (c/ blockers) → blocked
-nenhum artefato        → understand (entrada)
+Context Spec (no block)→ execution  | (with blockers) → blocked
+no artifact            → understand (entry)
 ```
 
-Fluxo: `Todo ─(auto)─► In Progress` → understand → execution → review →
-(APPROVED, auto: merge + status) `To Review` ─(humano)─► `Done`. Entrada automática; gate humano só na saída.
+Flow: `Todo ─(auto)─► In Progress` → understand → execution → review →
+(APPROVED, auto: merge + status) `To Review` ─(human)─► `Done`. Entry is automatic; human gate only on exit.
 
-Tentativas = nº de comentários `## 🔍 Review` REJECTED. Limite: 3 → `blocked`.
-**Base de branch para review/merge: `production`.** Executor commita em `esteira/<TICKET-ID>`.
-O worktree de isolamento do executor parte do **HEAD local de `production`** via
-`worktree.baseRef: "head"` em `.claude/settings.json` (a chave só aceita `"fresh"` ou
-`"head"`). Motivo: não há `origin/HEAD` resolvível e o código integrado vive só no
-`production` local — o default `"fresh"` perderia os tickets já mergeados.
+Attempts = number of `## 🔍 Review` REJECTED comments. Limit: 3 → `blocked`.
+**Branch base for review/merge: `production`.** The executor commits on `esteira/<TICKET-ID>`.
+The executor's isolation worktree branches from the **local HEAD of `production`** via
+`worktree.baseRef: "head"` in `.claude/settings.json` (the key only accepts `"fresh"` or
+`"head"`). Reason: there is no resolvable `origin/HEAD` and the integrated code lives only in
+the local `production` — the default `"fresh"` would lose the already-merged tickets.
 
-| Evento | Ação da esteira |
+| Event | Lane action |
 |---|---|
-| Review APPROVED | **auto, na mesma varredura:** merge `esteira/<TICKET-ID>` → `production` (idempotente) **e move o ticket p/ `To Review`**. A fila **não** espera você. |
-| você move `To Review` → `Done` | só fecha o ticket (o merge já ocorreu) |
-| você reprova: move `To Review`/`Done` → `Todo` + comenta `## ⛔ Kick-back: <motivo>` | **auto (idempotente):** o kick-back invalida os artefatos anteriores (createdAt < o dele), reverte o merge em `production` (`git revert -m 1`), e reabre o ticket em `In Progress`/`understand` passando o `<motivo>` ao context-builder. Mover status não basta — o artefato é a verdade. Anti-loop: 2 kick-backs → `blocked`. |
+| Review APPROVED | **auto, in the same sweep:** merge `esteira/<TICKET-ID>` → `production` (idempotent) **and move the ticket to `To Review`**. The queue does **not** wait for you. |
+| you move `To Review` → `Done` | just closes the ticket (the merge already happened) |
+| you reject: move `To Review`/`Done` → `Todo` + comment `## ⛔ Kick-back: <reason>` | **auto (idempotent):** the kick-back invalidates the previous artifacts (createdAt < its own), reverts the merge on `production` (`git revert -m 1`), and reopens the ticket in `In Progress`/`understand` passing the `<reason>` to the context-builder. Moving the status is not enough — the artifact is the truth. Anti-loop: 2 kick-backs → `blocked`. |
 
-**Autonomia & WIP=1:** a esteira roda o épico inteiro sozinha, empilhando os tickets em
-`To Review` p/ você validar quando quiser. Ela só para por **bloqueio real** (`blocked`) ou
-por não haver `Todo` elegível. Invariante: **uma única task ativa por vez**.
+**Autonomy & WIP=1:** the lane runs the whole epic on its own, stacking the tickets in
+`To Review` for you to validate whenever you want. It only stops on a **real block** (`blocked`) or
+when there is no eligible `Todo`. Invariant: **a single active task at a time**.
 
-## Handoffs (artefatos como comentários no ticket)
+## Handoffs (artifacts as comments on the ticket)
 
-Cada estação grava seu resultado como comentário no ticket, com header padrão:
-- `## 🧭 Context Spec` — escopo, arquivos afetados, abordagem, critérios de aceite, plano de testes.
-- `## 🔧 Work Log` — o que o executor fez, branch/diff, testes rodados.
-- `## 🔍 Review` — veredito (APPROVED/REJECTED) + justificativa contra os critérios.
+Each station records its result as a comment on the ticket, with a standard header:
+- `## 🧭 Context Spec` — scope, affected files, approach, acceptance criteria, test plan.
+- `## 🔧 Work Log` — what the executor did, branch/diff, tests run.
+- `## 🔍 Review` — verdict (APPROVED/REJECTED) + justification against the criteria.
 
-## Base de conhecimento (`kb/`) — memória dos agentes
+## Knowledge base (`kb/`) — the agents' memory
 
-A `kb/` é a camada de memória vetorial local (sqlite-vec + embeddings local-first via
-`transformers.js`), portada da v2. É uma biblioteca local — um arquivo `.db`
-(`kb.db`, gitignored), **sem serviço**.
+The `kb/` is the local vector memory layer (sqlite-vec + local-first embeddings via
+`transformers.js`). It's a local library — a single `.db` file
+(`kb.db`, gitignored), **no service**.
 
-O driver usa a KB em dois momentos por ticket (read + write):
-- **Recall** (antes de acionar a estação): consulta a KB e injeta um bloco
-  `## 📚 Memória relevante` no prompt do agente. *(wiring em WLN-19)*
-- **Ingest** (depois de postar o artefato no Linear): grava Context Spec / Work Log /
-  Review na KB, com tags `kind`/`stage`/`source`, de forma idempotente. *(wiring em WLN-20)*
+The driver uses the KB at two moments per ticket (read + write):
+- **Recall** (before triggering the station): queries the KB and injects a
+  `## 📚 Relevant memory` block into the agent's prompt. *(wiring in WLN-19)*
+- **Ingest** (after posting the artifact to Linear): writes Context Spec / Work Log /
+  Review to the KB, with `kind`/`stage`/`source` tags, idempotently. *(wiring in WLN-20)*
 
-> CLIs `kb/recall.mjs` e `kb/ingest.mjs` são a superfície que o driver chama (WLN-17).
-> Enquanto o wiring não chega, a esteira roda só sobre o Linear (como a v1).
+> The `kb/recall.mjs` and `kb/ingest.mjs` CLIs are the surface the driver calls (WLN-17).
+> Until the wiring lands, the lane runs over Linear alone (like v1).
 
-## IDs do Linear (coordenadas da esteira)
+## Linear IDs (the lane's coordinates)
 
-**Team e Project são âncoras estáveis — sempre use o ID.** Já os **status e labels são
-resolvidos por NOME a cada sweep** (passo 0 do skill `/esteira`, via `list_issue_statuses`
-+ `list_issue_labels`): a tabela de IDs abaixo é apenas **cache/fallback**. Se o board for
-reordenado/recriado os IDs mudam, e o driver passa a usar os IDs ao vivo (reportando a
-divergência) sem quebrar o sweep.
+**Team and Project are stable anchors — always use the ID.** The **status and labels are
+resolved by NAME on every sweep** (step 0 of the `/lane` skill, via `list_issue_statuses`
++ `list_issue_labels`): the ID table below is only **cache/fallback**. If the board is
+reordered/recreated the IDs change, and the driver switches to using the live IDs (reporting the
+divergence) without breaking the sweep.
 
-> **Nomes canônicos = contrato (não renomeie).** As colunas `Todo` / `In Progress` /
-> `To Review` / `Done` / `Canceled` e os labels `stage:understand` / `stage:execution` /
-> `stage:review` / `stage:blocked` são resolvidos por esses nomes exatos a cada sweep.
-> Renomear qualquer um deles quebra a resolução: status canônico ausente **aborta o sweep**;
-> label `stage:*` ausente cai no ID hardcoded abaixo + warning.
+> **Canonical names = contract (do not rename).** The columns `Todo` / `In Progress` /
+> `To Review` / `Done` / `Canceled` and the labels `stage:understand` / `stage:execution` /
+> `stage:review` / `stage:blocked` are resolved by these exact names on every sweep.
+> Renaming any of them breaks resolution: a missing canonical status **aborts the sweep**;
+> a missing `stage:*` label falls back to the hardcoded ID below + warning.
 
-- Team (atual: "Lane", key DIM): `3c0058ed-759f-4678-b219-4d34d0f533d7`
-- Project (atual: "Auto Lane"): `9a2f315c-8def-4698-ba9a-8d0a680cda13`
-- Épico v3: **WLN-14**
+- Team (current: "Lane", key DIM): `3c0058ed-759f-4678-b219-4d34d0f533d7`
+- Project (current: "Auto Lane"): `9a2f315c-8def-4698-ba9a-8d0a680cda13`
+- Epic: **WLN-14**
 
-Status — **cache/fallback (resolvido por nome a cada sweep)** (⚠️ "To Review" reusou o ID do antigo "Done"; "Done" agora é um ID novo):
+Status — **cache/fallback (resolved by name on every sweep)** (⚠️ "To Review" reused the ID of the old "Done"; "Done" is now a new ID):
 - Todo: `c7b52570-af37-4d8e-abd3-95d927cae20c`
 - In Progress: `e26d59a8-f02e-4959-ae24-ee57e81f4534`
-- **To Review: `8f89ea97-e4c4-4625-a29a-56aab536363f`** (era o ID do antigo "Done")
-- **Done (novo): `be50bf53-88ac-4021-8bdf-774695cff007`**
+- **To Review: `8f89ea97-e4c4-4625-a29a-56aab536363f`** (was the ID of the old "Done")
+- **Done (new): `be50bf53-88ac-4021-8bdf-774695cff007`**
 - Canceled: `74f37c47-98d8-47a8-a7e7-f7936f4bc207`
 
-Labels — **cache/fallback (resolvido por nome a cada sweep)** (grupo `stage` = `9e921002-79e5-4435-92af-b2f42025b724`) — sub-estações de `In Progress`:
+Labels — **cache/fallback (resolved by name on every sweep)** (`stage` group = `9e921002-79e5-4435-92af-b2f42025b724`) — sub-stations of `In Progress`:
 - stage:understand: `c1e0dfb5-423f-49c5-915b-686c025b1dd7`
 - stage:execution: `58c3331f-3539-4e5b-b13f-16a9601aea0b`
 - stage:review: `e948cf81-3414-4c55-a62d-c7c9192e5db7`
 - stage:blocked: `649682c6-fec8-400b-8760-5453ea25eaae`
-- *(stage:sign-off `b862a7e9-0150-4159-8998-3d70eff5555b` — **deprecado**: substituído pelo status `To Review`.)*
+- *(stage:sign-off `b862a7e9-0150-4159-8998-3d70eff5555b` — **deprecated**: replaced by the `To Review` status.)*
 
-## Como rodar
+## How to run
 
-**1. Preparar a memória (`kb/`) — uma vez:**
-
-```bash
-cd kb && npm install            # better-sqlite3 + sqlite-vec (uma vez)
-node seed.mjs                    # popula kb.db com os docs do repo (provider real)
-node seed.mjs --fake           # ...ou offline (provider fake, sem baixar modelo)
-```
-
-`seed.mjs` cria/popula o `kb.db` (gitignored) **ancorado na raiz do repo** (default
-resolvido pelo próprio script, independente do CWD) — o MESMO arquivo que recall/ingest
-usam por padrão (passo 3). Idempotente.
-
-**2. Rodar a esteira:**
-
-- Uma passada: `/esteira`
-- Em loop: `/loop /esteira` (sem intervalo = auto-ritmado) ou `/loop 15m /esteira`
-
-**3. Recall + ingest no MESMO `kb.db` default.** O driver chama `kb/recall.mjs` (READ →
-injeta `## 📚 Memória relevante` no prompt) e `kb/ingest.mjs` (WRITE) **sem** `--db`:
-ambos resolvem `kb.db` **ancorado na raiz do repo** (independente do CWD). Não passe
-`--db` (ver `d.0`/`d.1` no SKILL).
-
-**Smoke (evidência offline de recall + ingest):**
+**1. Prepare the memory (`kb/`) — once:**
 
 ```bash
-cd kb && KB_FAKE_EMBEDDINGS=1 node e2e_smoke.mjs   # bloco de memória + antes/depois
-cd kb && KB_FAKE_EMBEDDINGS=1 npm test             # suíte completa, offline
+cd kb && npm install            # better-sqlite3 + sqlite-vec (once)
+node seed.mjs                    # populates kb.db with the repo docs (real provider)
+node seed.mjs --fake           # ...or offline (fake provider, no model download)
 ```
+
+`seed.mjs` creates/populates `kb.db` (gitignored) **anchored at the repo root** (default
+resolved by the script itself, independent of the CWD) — the SAME file that recall/ingest
+use by default (step 3). Idempotent.
+
+**2. Run the lane:**
+
+- One pass: `/lane`
+- In a loop: `/loop /lane` (no interval = self-paced) or `/loop 15m /lane`
+
+**3. Recall + ingest on the SAME default `kb.db`.** The driver calls `kb/recall.mjs` (READ →
+injects `## 📚 Relevant memory` into the prompt) and `kb/ingest.mjs` (WRITE) **without** `--db`:
+both resolve `kb.db` **anchored at the repo root** (independent of the CWD). Don't pass
+`--db` (see `d.0`/`d.1` in the SKILL).
+
+**Smoke (offline evidence of recall + ingest):**
+
+```bash
+cd kb && KB_FAKE_EMBEDDINGS=1 node e2e_smoke.mjs   # memory block + before/after
+cd kb && KB_FAKE_EMBEDDINGS=1 npm test             # full suite, offline
+```
+
+**Artifact-comment language (`LANE_LANG`).** The human-readable PROSE the lane writes into
+Linear comments (Context Spec / Work Log / Review) is language-configurable via a gitignored
+root `.env` key `LANE_LANG` (default `en`; accepted `en`/`pt`/`pt-BR`; unrecognized/empty/missing
+→ `en`). `cp .env.example .env` and edit it; `.env.example` is the committed template. The
+driver resolves it at sweep start (step 0.6 of the `/lane` skill) and threads it into every
+station prompt. **Only prose is localized** — the protocol markers/headers (`## 🧭 Context Spec`
+/ `## 🔧 Work Log` / `## 🔍 Review` / `## ⛔ Kick-back:`) and the parsed fields (`**Blockers:**`
+/ `**Status:** SUCCESS|FAILED` / `**Verdict:** APPROVED|REJECTED`) stay verbatim in English, since
+the state machine parses them with English-anchored regexes.

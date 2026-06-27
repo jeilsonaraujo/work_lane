@@ -1,13 +1,13 @@
 'use strict';
 
-// Regressão do WLN-24: o default de `--db` é ancorado na RAIZ do repo, não no CWD.
+// Regression for WLN-24: the default of `--db` is anchored at the repo ROOT, not the CWD.
 //
-// Prova de integração: ingest rodado de um CWD e recall rodado de OUTRO CWD — ambos
-// SEM `--db` — convergem no MESMO kb.db (o da raiz), então o recall acha o chunk que o
-// ingest gravou. Também garante que NENHUM kb.db é criado nos CWDs temporários.
+// Integration proof: ingest run from one CWD and recall run from ANOTHER CWD — both
+// WITHOUT `--db` — converge on the SAME kb.db (the root one), so recall finds the chunk that
+// ingest wrote. It also ensures NO kb.db is created in the temporary CWDs.
 //
-// Cuidado: este teste grava no kb.db REAL da raiz. Usa um `source`/`ticket` sentinela
-// e limpa via deleteBySource (idempotente, WLN-23) no finally, sem tocar outros dados.
+// Caution: this test writes to the REAL root kb.db. It uses a sentinel `source`/`ticket`
+// and cleans up via deleteBySource (idempotent, WLN-23) in the finally, without touching other data.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -21,18 +21,18 @@ const { openMemory } = require('./index.js');
 const RECALL = path.join(__dirname, 'recall.mjs');
 const INGEST = path.join(__dirname, 'ingest.mjs');
 
-// O kb.db real da raiz = o MESMO default que recall.mjs/ingest.mjs resolvem.
+// The real root kb.db = the SAME default that recall.mjs/ingest.mjs resolve.
 const ROOT_DB = path.resolve(__dirname, '..', 'kb.db');
 
-// Ambiente offline determinístico para todos os subprocessos.
+// Deterministic offline environment for all subprocesses.
 const FAKE_ENV = { ...process.env, KB_FAKE_EMBEDDINGS: '1' };
 
-// Sentinelas exclusivos deste teste (evitam colidir/limpar dados reais).
+// Sentinels exclusive to this test (avoid colliding with / cleaning real data).
 const SENTINEL_TICKET = 'WLN-24-DBPATH-TEST';
 const SENTINEL_SOURCE = 'dim-24-db-path-test-sentinel';
 const SENTINEL_TEXT =
-  'sentinela WLN-24: prova de que o default de --db é ancorado na raiz do repo, ' +
-  'convergindo recall e ingest no mesmo kb.db de qualquer CWD.';
+  'WLN-24 sentinel: proof that the default of --db is anchored at the repo root, ' +
+  'converging recall and ingest on the same kb.db from any CWD.';
 
 function run(script, args, { cwd, input } = {}) {
   return spawnSync(process.execPath, [script, ...args], {
@@ -44,7 +44,7 @@ function run(script, args, { cwd, input } = {}) {
 }
 
 function cleanup(dirs) {
-  // Remove o que o teste gravou no kb.db real (idempotente) e os dirs temp.
+  // Removes what the test wrote in the real kb.db (idempotent) and the temp dirs.
   try {
     const mem = openMemory(ROOT_DB);
     try {
@@ -53,46 +53,46 @@ function cleanup(dirs) {
       mem.close();
     }
   } catch {
-    // kb.db pode nem existir se o ingest falhou antes de criar — nada a limpar.
+    // kb.db may not even exist if ingest failed before creating it — nothing to clean.
   }
   for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
 }
 
-test('default de --db é ancorado na raiz: ingest (CWD=A) e recall (CWD=B) usam o MESMO kb.db', () => {
+test('default of --db is anchored at the root: ingest (CWD=A) and recall (CWD=B) use the SAME kb.db', () => {
   const tmpA = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-cwd-a-'));
   const tmpB = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-cwd-b-'));
   try {
-    // Ingest de dentro de tmpA, SEM --db (usa o default ancorado na raiz).
+    // Ingest from inside tmpA, WITHOUT --db (uses the default anchored at the root).
     const ing = run(
       INGEST,
       ['--ticket', SENTINEL_TICKET, '--source', SENTINEL_SOURCE, '--fake'],
       { cwd: tmpA, input: SENTINEL_TEXT },
     );
-    assert.equal(ing.status, 0, `ingest deveria sair 0. stderr=${ing.stderr}`);
+    assert.equal(ing.status, 0, `ingest should exit 0. stderr=${ing.stderr}`);
     const ingOut = JSON.parse(ing.stdout);
-    assert.ok(ingOut.chunks > 0, 'ingest gravou ao menos 1 chunk');
+    assert.ok(ingOut.chunks > 0, 'ingest wrote at least 1 chunk');
 
-    // Recall de dentro de tmpB, SEM --db, filtrando pelo ticket sentinela.
+    // Recall from inside tmpB, WITHOUT --db, filtering by the sentinel ticket.
     const rec = run(
       RECALL,
       [SENTINEL_TEXT, '--ticket', SENTINEL_TICKET, '--k', '5', '--fake'],
       { cwd: tmpB },
     );
-    assert.equal(rec.status, 0, `recall deveria sair 0. stderr=${rec.stderr}`);
+    assert.equal(rec.status, 0, `recall should exit 0. stderr=${rec.stderr}`);
     const results = JSON.parse(rec.stdout);
-    assert.ok(Array.isArray(results), 'recall retorna array');
+    assert.ok(Array.isArray(results), 'recall returns an array');
     assert.ok(
       results.length > 0,
-      'recall (CWD=B) achou o chunk gravado pelo ingest (CWD=A) → mesmo kb.db da raiz',
+      'recall (CWD=B) found the chunk written by ingest (CWD=A) → same root kb.db',
     );
     assert.ok(
       results.some((r) => r.ticket_id === SENTINEL_TICKET && r.source === SENTINEL_SOURCE),
-      'o chunk retornado é exatamente o sentinela ingerido',
+      'the returned chunk is exactly the ingested sentinel',
     );
 
-    // Nenhum kb.db parasita nos CWDs temporários (o antigo bug do default relativo).
-    assert.ok(!fs.existsSync(path.join(tmpA, 'kb.db')), 'nenhum kb.db criado no CWD do ingest');
-    assert.ok(!fs.existsSync(path.join(tmpB, 'kb.db')), 'nenhum kb.db criado no CWD do recall');
+    // No stray kb.db in the temporary CWDs (the old relative-default bug).
+    assert.ok(!fs.existsSync(path.join(tmpA, 'kb.db')), 'no kb.db created in the ingest CWD');
+    assert.ok(!fs.existsSync(path.join(tmpB, 'kb.db')), 'no kb.db created in the recall CWD');
   } finally {
     cleanup([tmpA, tmpB]);
   }

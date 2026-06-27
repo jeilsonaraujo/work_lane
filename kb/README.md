@@ -1,33 +1,33 @@
-# Base de conhecimento (`kb/`)
+# Knowledge base (`kb/`)
 
-Memória/contexto semântica da esteira v3 (portada da v2, WLN-16). Base **separada e
-desacoplada**: biblioteca standalone, sem serviço/MCP, usa seu próprio
-arquivo `.db` (default `kb.db`, gitignored).
+Semantic memory/context for the agents (WLN-16). A **separate and decoupled** base:
+a standalone library, with no service/MCP, using its own `.db` file
+(default `kb.db`, gitignored).
 
-Stack: **better-sqlite3** + **sqlite-vec** (tabela virtual `vec0`) + embeddings
-**local-first** (`transformers.js`), com provider injetável.
+Stack: **better-sqlite3** + **sqlite-vec** (virtual table `vec0`) + **local-first**
+embeddings (`transformers.js`), with an injectable provider.
 
-## Componentes
+## Components
 
-| Arquivo | Papel |
+| File | Role |
 |---|---|
-| `db.js` | abre SQLite, carrega sqlite-vec (`sqliteVec.load`), pragmas; exporta `EMBED_DIM` |
-| `migrate.js` | runner de migrations idempotente sobre `schema/` |
-| `schema/001_init.sql` | tabela virtual `vec_chunks` + `chunks` (metadados) + `schema_migrations` + índices |
-| `embeddings.js` | contrato do provider + `FakeEmbeddingProvider` + factory `createProvider` |
-| `providers/transformers.js` | provider real (multilíngue, `paraphrase-multilingual-MiniLM-L12-v2`), `import()` lazy do modelo |
-| `chunking.js` | chunking determinístico por tamanho + overlap |
+| `db.js` | opens SQLite, loads sqlite-vec (`sqliteVec.load`), pragmas; exports `EMBED_DIM` |
+| `migrate.js` | idempotent migration runner over `schema/` |
+| `schema/001_init.sql` | virtual table `vec_chunks` + `chunks` (metadata) + `schema_migrations` + indexes |
+| `embeddings.js` | provider contract + `FakeEmbeddingProvider` + `createProvider` factory |
+| `providers/transformers.js` | real provider (multilingual, `paraphrase-multilingual-MiniLM-L12-v2`), lazy `import()` of the model |
+| `chunking.js` | deterministic chunking by size + overlap |
 | `index.js` | `openMemory` / `createMemory` → `ingest`, `ingestBatch`, `query`, `deleteBySource` |
-| `seed.mjs` | CLI que popula a KB com os docs base (`kind=doc`) **e o código-fonte do repo** (`kind=code`), idempotente |
-| `ingest.mjs` / `recall.mjs` | CLIs finas de escrita/leitura usadas pelo driver da esteira |
-| `e2e_smoke.mjs` | smoke e2e: prova recall+ingest nos dois sentidos (memória no prompt + chunk novo) |
+| `seed.mjs` | CLI that populates the KB with the base docs (`kind=doc`) **and the repo source code** (`kind=code`), idempotent |
+| `ingest.mjs` / `recall.mjs` | thin write/read CLIs used by the driver |
+| `e2e_smoke.mjs` | e2e smoke: proves recall+ingest in both directions (memory in the prompt + new chunk) |
 
-## Uso
+## Usage
 
 ```js
 const { openMemory } = require('./index');
 
-// Default usa o provider fake (offline). Para o provider real, injete:
+// Default uses the fake provider (offline). For the real provider, inject it:
 //   const { createProvider } = require('./embeddings');
 //   const mem = openMemory('kb.db', { provider: createProvider('transformers') });
 const mem = openMemory('kb.db');
@@ -37,160 +37,160 @@ await mem.ingest({
   stage: 'execution',
   kind: 'spec',
   source: 'context-spec',
-  text: 'texto longo do artefato...',
+  text: 'long artifact text...',
 });
 
-const hits = await mem.query('busca semântica', {
-  filter: { ticket_id: 'WLN-16', stage: 'execution' }, // filtro híbrido opcional
+const hits = await mem.query('semantic search', {
+  filter: { ticket_id: 'WLN-16', stage: 'execution' }, // optional hybrid filter
   k: 5,
 });
-// hits: [{ ticket_id, stage, kind, source, body, chunk_index, distance }] ordenado por distance asc
+// hits: [{ ticket_id, stage, kind, source, body, chunk_index, distance }] ordered by distance asc
 ```
 
-## Esquema de tags
+## Tag schema
 
-Todo chunk carrega metadados (tags) usados no filtro híbrido do `query`/`recall`.
-O esquema é fixo em todo o wiring da esteira:
+Every chunk carries metadata (tags) used in the hybrid filter of `query`/`recall`.
+The schema is fixed across all wiring:
 
-| Tag | Valores | Significado |
+| Tag | Values | Meaning |
 |---|---|---|
-| `kind` | `doc`, `code`, `spec`, `worklog`, `review` | tipo do conteúdo: doc do repo, código-fonte do repo, ou artefato de uma estação |
-| `stage` | `understand`, `execution`, `review`, `sign-off`, `blocked`, ou `null` | estágio que produziu o artefato; `null` para docs do repo |
-| `source` | caminho do arquivo (docs) **ou** ID do comentário do Linear (artefatos) | origem/identidade do conteúdo; chave da idempotência |
-| `ticket_id` | ex.: `WLN-18`, ou `REPO` (sentinela dos docs do repo) | ticket dono do conteúdo |
+| `kind` | `doc`, `code`, `spec`, `worklog`, `review` | content type: repo doc, repo source code, or a station artifact |
+| `stage` | `understand`, `execution`, `review`, `sign-off`, `blocked`, or `null` | stage that produced the artifact; `null` for repo docs |
+| `source` | file path (docs) **or** Linear comment ID (artifacts) | origin/identity of the content; idempotency key |
+| `ticket_id` | e.g. `WLN-18`, or `REPO` (sentinel for repo docs) | ticket that owns the content |
 
-- **Docs do repo** (via `seed.mjs`): `kind='doc'`, `stage=null`, `ticket_id='REPO'`,
-  `source=<caminho relativo à raiz>` (ex.: `'CLAUDE.md'`, `'kb/README.md'`). O recall
-  desses docs filtra por `--kind doc`.
-- **Código-fonte do repo** (via `seed.mjs`): `kind='code'`, `stage=null`,
-  `ticket_id='REPO'`, `source=<caminho relativo à raiz>` (ex.: `'kb/index.js'`,
-  `'.claude/skills/esteira/SKILL.md'`). Dá ao recall de execution padrões reais do
-  código. O recall filtra por `--kind code`. **O que é seedado:**
-  - `kb/` → arquivos `*.js` e `*.mjs`;
-  - `.claude/` → arquivos `*.md` (prompts/skills/agents).
+- **Repo docs** (via `seed.mjs`): `kind='doc'`, `stage=null`, `ticket_id='REPO'`,
+  `source=<path relative to the root>` (e.g. `'CLAUDE.md'`, `'kb/README.md'`). Recall
+  of these docs filters by `--kind doc`.
+- **Repo source code** (via `seed.mjs`): `kind='code'`, `stage=null`,
+  `ticket_id='REPO'`, `source=<path relative to the root>` (e.g. `'kb/index.js'`,
+  `'.claude/skills/lane/SKILL.md'`). Gives the execution recall real code
+  patterns. Recall filters by `--kind code`. **What is seeded:**
+  - `kb/` → `*.js` and `*.mjs` files;
+  - `.claude/` → `*.md` files (prompts/skills/agents).
 
-  **O que NÃO é seedado** (exclusões do walker): `node_modules/`, `.git/` e caches
-  (`.cache`/`dist`/`build`/`coverage`) em qualquer nível; arquivos `*.db`; arquivos de
-  teste `*.test.js`; e tudo sob `.claude/worktrees/**` (worktrees efêmeras da esteira).
-  Arquivos de texto acima de ~256 KB são pulados (binários/gerados não entram). O walker
-  é nativo (`fs.readdirSync(dir, { recursive: true })` — `fs.globSync` não existe no
-  Node 20.18.1) e a lista de sources é ordenada para ingestão determinística.
-- **Artefatos das estações** (via `ingest.mjs`): `kind ∈ {spec, worklog, review}`,
-  `stage` = a estação, `source` = ID do comentário no Linear.
+  **What is NOT seeded** (walker exclusions): `node_modules/`, `.git/` and caches
+  (`.cache`/`dist`/`build`/`coverage`) at any level; `*.db` files; test files
+  `*.test.js`; and everything under `.claude/worktrees/**` (ephemeral worktrees). Text
+  files larger than ~256 KB are skipped (binaries/generated files do not enter). The
+  walker is native (`fs.readdirSync(dir, { recursive: true })` — `fs.globSync` does not
+  exist on Node 20.18.1) and the source list is sorted for deterministic ingestion.
+- **Station artifacts** (via `ingest.mjs`): `kind ∈ {spec, worklog, review}`,
+  `stage` = the station, `source` = the Linear comment ID.
 
-**Idempotência por `source`:** o próprio `Memory.ingest` remove-antes-de-inserir quando há
-`source` — apaga os `chunks` + `vec_chunks` pareados daquela `source` na **mesma transação**
-do insert (`source` null/ausente = sem dedup). Assim, reingerir o mesmo artefato **substitui**
-em vez de duplicar. `Memory.deleteBySource(source)` continua disponível para remoção avulsa, e
-o `seed.mjs` apenas **reforça** essa garantia — rodá-lo 2x não duplica.
+**Idempotence by `source`:** `Memory.ingest` itself does delete-before-insert when a
+`source` is present — it removes the paired `chunks` + `vec_chunks` of that `source` in the
+**same transaction** as the insert (`source` null/absent = no dedup). So reingesting the same
+artifact **replaces** instead of duplicating. `Memory.deleteBySource(source)` remains available
+for ad-hoc removal, and `seed.mjs` only **reinforces** this guarantee — running it twice does
+not duplicate.
 
 ```bash
-# Popular a KB com os docs base + o código-fonte do repo (idempotente):
-node seed.mjs            # provider real (transformers)
-node seed.mjs --fake     # provider fake (offline)
+# Populate the KB with the base docs + the repo source code (idempotent):
+node seed.mjs            # real provider (transformers)
+node seed.mjs --fake     # fake provider (offline)
 
-# Buscar só nos docs do repo:
-node recall.mjs "como funciona a esteira" --kind doc
+# Search only the repo docs:
+node recall.mjs "how the pipeline works" --kind doc
 
-# Buscar padrões no código-fonte seedado:
+# Search patterns in the seeded source code:
 node recall.mjs "openMemory ingest deleteBySource" --kind code
 ```
 
-## Dimensão dos vetores
+## Vector dimension
 
-`EMBED_DIM` (em `db.js`, atualmente **384** = `paraphrase-multilingual-MiniLM-L12-v2`)
-é a fonte de verdade única: o runner substitui `{{EMBED_DIM}}` no schema e ambos
-os providers declaram `dim === EMBED_DIM`. **Trocar de modelo/dimensão** = nova
-migration (`002_*.sql` com nova tabela vetorial) + **re-index** dos documentos.
-Não há conversão automática entre dimensões.
+`EMBED_DIM` (in `db.js`, currently **384** = `paraphrase-multilingual-MiniLM-L12-v2`)
+is the single source of truth: the runner substitutes `{{EMBED_DIM}}` in the schema and
+both providers declare `dim === EMBED_DIM`. **Switching model/dimension** = a new
+migration (`002_*.sql` with a new vector table) + a **re-index** of the documents.
+There is no automatic conversion between dimensions.
 
-### Métrica de distância (cosine via L2-normalizado)
+### Distance metric (cosine via L2-normalized)
 
-A busca usa a distância **L2 (euclidiana)** do `vec0` (default do sqlite-vec; sem
-`distance_metric=`). Como os embeddings são **L2-normalizados** (norma ≈ 1, via
-`normalize()` em `embeddings.js`, aplicado por ambos os providers), o ranking por
-L2 é **monotonicamente equivalente a cosine**: para vetores unitários vale
-`L2² = 2·(1 − cos)`, então "menor L2" == "maior similaridade cosseno". Ou seja,
-ordenamos por cosseno na prática sem mudar a DDL nem precisar de migration.
+The search uses the **L2 (Euclidean)** distance of `vec0` (sqlite-vec default; without
+`distance_metric=`). Since the embeddings are **L2-normalized** (norm ≈ 1, via
+`normalize()` in `embeddings.js`, applied by both providers), ranking by L2 is
+**monotonically equivalent to cosine**: for unit vectors `L2² = 2·(1 − cos)`, so
+"smaller L2" == "greater cosine similarity". In other words, we order by cosine in
+practice without changing the DDL or needing a migration.
 
-O provider real default usa `Xenova/paraphrase-multilingual-MiniLM-L12-v2`, um
-modelo **multilíngue** (PT incluso) e **simétrico**: como query e passagem
-compartilham o mesmo encoding, **não** é preciso prefixar os textos com
-`query:`/`passage:` (ao contrário da família e5). A API `embed(texts)` trata
-consulta e documento de forma indistinta.
+The default real provider uses `Xenova/paraphrase-multilingual-MiniLM-L12-v2`, a
+**multilingual** and **symmetric** model: since query and passage share the same
+encoding, there is **no** need to prefix the texts with `query:`/`passage:` (unlike the
+e5 family). The `embed(texts)` API treats query and document indistinctly.
 
-## Troca de provider
+## Switching provider
 
-`query`/`ingest` recebem o provider via construtor (`{ provider }`). Qualquer
-objeto `{ name, dim, embed(texts) => Promise<Float32Array[]> }` serve:
+`query`/`ingest` receive the provider via the constructor (`{ provider }`). Any object
+`{ name, dim, embed(texts) => Promise<Float32Array[]> }` works:
 
-- `createProvider('fake')` — determinístico, offline, usado nos **testes**.
-- `createProvider('transformers')` — local-first; faz `import()` lazy do modelo
-  só na 1ª chamada a `embed()`. **Nenhum teste** carrega esse provider.
-- **Voyage** (futuro) — basta um novo provider com o mesmo contrato.
+- `createProvider('fake')` — deterministic, offline, used in the **tests**.
+- `createProvider('transformers')` — local-first; does a lazy `import()` of the model
+  only on the 1st call to `embed()`. **No test** loads this provider.
+- **Voyage** (future) — just a new provider with the same contract.
 
-`@huggingface/transformers` é dependência **opcional**: ausência não quebra
-`npm install`/`npm test`; a 1ª chamada ao provider real é que falha com mensagem
-clara.
+`@huggingface/transformers` is an **optional** dependency: its absence does not break
+`npm install`/`npm test`; the 1st call to the real provider is what fails with a clear
+message.
 
-## Testes (offline)
+## Tests (offline)
 
 ```bash
 cd kb && npm install && npm test
 ```
 
-A suíte (`memory.test.js`, `node --test`) roda 100% offline com o provider fake:
-migrations + idempotência, carga da extensão (`vec_version()`), chunking,
-determinismo do fake, ingestão, query por similaridade e híbrida, ranking por
-`distance`, e um teste que garante que `transformers.js` **não** foi carregado.
-Junto rodam os smokes de CLI (`cli.test.js`, `seed.test.js`) e o e2e (`e2e_smoke.test.js`).
+The suite (`memory.test.js`, `node --test`) runs 100% offline with the fake provider:
+migrations + idempotence, extension loading (`vec_version()`), chunking, fake determinism,
+ingestion, similarity and hybrid query, ranking by `distance`, and a test that ensures
+`transformers.js` is **not** loaded. The CLI smokes (`cli.test.js`, `seed.test.js`) and the
+e2e (`e2e_smoke.test.js`) run alongside.
 
 ### Troubleshooting: `NODE_MODULE_VERSION`
 
-`better-sqlite3` é um módulo **nativo**: ele é compilado contra uma versão específica
-do Node. Ao trocar de versão (ex.: `20 → 22`), `npm test`/`seed.mjs` falham com
+`better-sqlite3` is a **native** module: it is compiled against a specific Node version.
+When switching versions (e.g. `20 → 22`), `npm test`/`seed.mjs` fail with
 `Error: ... was compiled against a different Node.js version using NODE_MODULE_VERSION`.
-**Isso não é "node ausente"** — o Node está instalado (via nvm); só o binário nativo
-precisa ser recompilado:
+**This is not "node missing"** — Node is installed (via nvm); only the native binary
+needs to be recompiled:
 
 ```bash
-cd kb && npm rebuild better-sqlite3   # recompila para o Node atual
+cd kb && npm rebuild better-sqlite3   # recompiles for the current Node
 ```
 
-O repo fixa a versão em `.nvmrc` (raiz) — rode `nvm use` antes de instalar/rodar para
-manter o ambiente consistente e evitar esse mismatch.
+The repo pins the version in `.nvmrc` (root) — run `nvm use` before installing/running to
+keep the environment consistent and avoid this mismatch.
 
-## Smoke e2e (recall + ingest)
+## e2e smoke (recall + ingest)
 
-`e2e_smoke.mjs` é a evidência ponta-a-ponta da esteira v3 com memória, **offline** (provider
-fake) sobre um `kb.db` **temp** (nunca toca o `kb.db` real). Espelha o driver:
+`e2e_smoke.mjs` is the end-to-end evidence of the memory, **offline** (fake provider) over a
+**temp** `kb.db` (it never touches the real `kb.db`). It mirrors the driver:
 
-1. **Ingest #1** — grava um Context Spec fake (memória-âncora) e imprime a contagem.
-2. **Recall** — consulta a KB e **monta o bloco `## 📚 Memória relevante`** exatamente como
-   o passo `d.0.3` do SKILL (`N. [ticket · kind/stage · source] (dist X)` + body trunc ~500).
-   Provar que o bloco aparece = **memória injetada no prompt do agente**.
-3. **Ingest #2** — grava um Work Log novo; assere que a contagem de chunks **cresceu** =
-   **chunk novo na KB**.
+1. **Ingest #1** — writes a fake Context Spec (anchor memory) and prints the count.
+2. **Recall** — queries the KB and **builds the `## 📚 Relevant memory` block** exactly like
+   step `d.0.3` of the SKILL (`N. [ticket · kind/stage · source] (dist X)` + body truncated ~500).
+   Proving the block appears = **memory injected into the agent's prompt**.
+3. **Ingest #2** — writes a new Work Log; asserts that the chunk count **grew** =
+   **new chunk in the KB**.
 
 ```bash
-cd kb && KB_FAKE_EMBEDDINGS=1 node e2e_smoke.mjs   # imprime o bloco + "antes=X depois=Y"
+cd kb && KB_FAKE_EMBEDDINGS=1 node e2e_smoke.mjs   # prints the block + "before=X after=Y"
 ```
 
-Sai com código ≠ 0 em qualquer erro (inclusive se a KB não crescer). O wrapper
-`e2e_smoke.test.js` roda esse script via `node --test` e assere exit 0, presença do bloco e
-o crescimento da contagem — entrando na suíte offline padrão.
+It exits with a non-zero code on any error (including if the KB does not grow). The
+`e2e_smoke.test.js` wrapper runs this script via `node --test` and asserts exit 0, the
+presence of the block and the count growth — joining the standard offline suite.
 
-## Recall manual (provider real)
+## Manual recall (real provider)
 
-Fora do gate de testes (baixa modelo na 1ª vez):
+Outside the test gate (downloads the model on the 1st run):
 
 ```bash
-node scripts/recall.mjs "como funciona a memória?"
+node scripts/recall.mjs "how does the memory work?"
 ```
 
-## LanceDB (futuro)
+## LanceDB (future)
 
-O MVP usa sqlite-vec por rodar offline e alinhar com a stack local. Migrar para
-**LanceDB** é uma evolução possível se a escala/recursos de indexação exigirem —
-o contrato de `Memory` (`ingest`/`query`) isola o store, e o provider de
-embedding já é desacoplado.
+This base uses sqlite-vec because it runs offline and aligns with the local stack.
+Migrating to **LanceDB** is a possible evolution if scale/indexing resources require it —
+the `Memory` contract (`ingest`/`query`) isolates the store, and the embedding provider is
+already decoupled.

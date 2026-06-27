@@ -1,76 +1,162 @@
-# WorkLane — Esteira v3
+# Work Lane
 
-Pipeline autônomo (Loop Engineering) onde tickets do **Linear** fluem por estações,
-cada uma com um agente responsável. O Linear é o board / fonte de verdade; uma
-**base de conhecimento vetorial local** (`kb/`) dá contexto e memória aos agentes.
+Work Lane is an autonomous task pipeline where **Linear** tickets flow through stations —
+understand → execution → review — each driven by its own agent. A local vector **knowledge
+base** (`kb/`) gives those agents context and memory across tickets.
 
-Épico no Linear: **WLN-14**.
+**Linear is the board / source of truth, and there is no service of your own to deploy.**
+The pipeline lives entirely inside Claude Code plus a single local `.db` file.
 
-## Por que v3 (e não v2)
+## Overview
 
-A v2 (WLN-10) tentou substituir o Linear por um serviço local próprio. Isso exige
-deploy/manutenção de um sistema próprio e impede acompanhar o board de qualquer lugar.
-A v3 **mantém o Linear como board** e só reaproveita o pedaço que valia da v2 — a
-**memória vetorial local-first** — como biblioteca local (um arquivo `.db`, sem serviço).
-
-## Arquitetura
+You don't drive Work Lane ticket-by-ticket. You design the lane and let it pull work on its
+own. A ticket moves through the board like this:
 
 ```
-   Linear (board / fonte de verdade)
-        │  tickets + comentários (artefatos)
-        ▼
-   /esteira (driver)  ──recall──►  kb/ (memória vetorial local)
-        │                ◄─ingest──┘
-        ▼
-   estações: understand → execution → review → To Review
-   (context-builder)  (executor)   (reviewer)   (gate humano)
+Todo ─(auto)─► In Progress ( understand → execution → review ) ─► To Review ─(human)─► Done
 ```
 
-- **Board:** projeto **Auto Lane** no Linear (identifique por ID — o nome pode mudar).
-  Colunas: `Todo → In Progress → To Review → Done`. Estágio derivado dos artefatos
-  (comentários), não do label. Ver `CLAUDE.md` e `.claude/skills/esteira/SKILL.md`.
-- **Memória (`kb/`):** sqlite-vec + embeddings local-first (`transformers.js`),
-  portada da v2. O driver consulta (recall) antes de cada estação e grava (ingest)
-  cada artefato. *(Chega nos tickets WLN-16…WLN-20.)*
+- **Entry is automatic.** The lane is WIP=1 and keeps itself busy: whenever there is no active
+  ticket and an eligible `Todo` exists, it pulls the next one — no human entry gate.
+- **Human gate only on exit.** The single place a human is required is `To Review → Done`,
+  where you validate the finished work.
+- **Stations map to agents.** `context-builder` (understand) → `executor` (execution) →
+  `reviewer` (review).
+- **Artifacts are the source of truth.** Each station writes its result as a comment on the
+  ticket: `## 🧭 Context Spec`, `## 🔧 Work Log`, `## 🔍 Review`. The driver derives the
+  current stage from these artifacts, not from the label.
 
-## Branch model
+The orchestrator is the `/lane` skill (`.claude/skills/lane/SKILL.md`). One invocation runs
+one sweep of the board; a loop wrapper turns it into a heartbeat. See `CLAUDE.md` for the full
+state machine.
 
-- Base de branch: **`production`**. Executor commita em `esteira/<TICKET-ID>`.
-- Review APROVADA → a esteira integra (merge → `production`) e move p/ `To Review`.
-  Gate humano só na saída: você valida em `To Review` e move → `Done`.
+## Requirements
 
-## Como rodar
+- **Node.js** — the repo pins the Node version via the root `.nvmrc` (`22.22.3`); run
+  `nvm use` to match it. Minimum Node 20+. (`kb/package.json` does not declare an `engines`
+  field — the `.nvmrc` is the version source.)
+- **npm** — ships with Node.
+- **Claude Code CLI** — Work Lane runs as Claude Code skills and agents.
+- **A Linear account + workspace**, plus the **Linear MCP server** configured in Claude Code:
 
-**1. Preparar a memória (`kb/`) — uma vez:**
+  ```bash
+  claude mcp add --transport sse linear https://mcp.linear.app/sse
+  ```
+
+  Then complete the OAuth prompt to authenticate. This is what lets the agents read and write
+  tickets, statuses, labels, and comments.
+- **KB native dependencies** — the knowledge base builds `better-sqlite3` (a native module) and
+  `sqlite-vec`. A one-time `npm install` inside `kb/` compiles them.
+  (`@huggingface/transformers` is an optional dependency; the offline tests don't need it.)
+
+## Linear board setup
+
+The board lives in a Linear project (here named **Auto Lane**). The driver resolves statuses
+and labels **by name on every sweep**, so the following names are a **contract — don't rename
+them.** A missing canonical status aborts the sweep.
+
+**Columns (statuses) that must exist, with these exact names:**
+
+`Backlog` · `Todo` · `In Progress` · `To Review` · `Done` · `Canceled`
+
+**Stage labels under a `stage` label group** (the sub-stations of `In Progress`):
+
+`stage:understand` · `stage:execution` · `stage:review` · `stage:blocked`
+
+The `stage:*` label is only a mirror of the derived stage; the artifacts (comments) remain the
+real source of truth.
+
+## Install
+
+1. **Clone** the repository.
+2. **Match the Node version:**
+
+   ```bash
+   nvm use            # uses the version in .nvmrc (22.22.3)
+   ```
+3. **Install the KB native dependencies** (one time):
+
+   ```bash
+   cd kb && npm install
+   ```
+4. **Seed the knowledge base:**
+
+   ```bash
+   node seed.mjs          # real embedding provider
+   node seed.mjs --fake   # offline (fake provider, no model download)
+   ```
+
+   `seed.mjs` creates and populates `kb.db` (gitignored, anchored at the repo root —
+   independent of your current directory). It's idempotent. This is the same file recall and
+   ingest use by default.
+5. **Configure the Linear MCP** in Claude Code (see Requirements):
+
+   ```bash
+   claude mcp add --transport sse linear https://mcp.linear.app/sse
+   ```
+
+## How to run
+
+- **One sweep:**
+
+  ```
+  /lane
+  ```
+- **Heartbeat loop** (self-paced, or on a fixed interval):
+
+  ```
+  /loop /lane          # auto-paced
+  /loop 15m /lane      # every 15 minutes
+  ```
+
+Only one driver runs at a time: each sweep acquires a mutual-exclusion lock before touching
+Linear, so two simultaneous `/lane` runs never break the WIP=1 invariant (the second aborts
+silently).
+
+## Artifact-comment language (`LANE_LANG`)
+
+The repo itself is English-only, but the **human-readable prose** the lane writes into the
+Linear comments (Context Spec / Work Log / Review) is language-configurable. The driver reads
+the key `LANE_LANG` from a gitignored root `.env` at the start of each sweep:
 
 ```bash
-cd kb && npm install            # better-sqlite3 + sqlite-vec (uma vez)
-node seed.mjs                    # popula kb.db com os docs do repo (provider real)
-node seed.mjs --fake            # ...ou offline (provider fake, sem baixar modelo)
+cp .env.example .env     # then edit LANE_LANG
 ```
 
-`seed.mjs` cria/popula o `kb.db` (gitignored) **ancorado na raiz do repo** (o default é
-resolvido pelo próprio script, independente do CWD) — é o mesmo arquivo que recall e
-ingest usam por padrão (ver passo 3). É idempotente: rodar 2× não duplica.
+- **Accepted values:** `en` (default), `pt`, `pt-BR`. Anything unrecognized, empty, or a
+  missing `.env` falls back to `en`.
+- **`.env` is gitignored** (never versioned); `.env.example` is the committed template.
+- **Only the prose is localized.** The protocol markers/headers (`## 🧭 Context Spec`,
+  `## 🔧 Work Log`, `## 🔍 Review`, `## ⛔ Kick-back:`) and the parsed fields
+  (`**Blockers:**`, `**Status:** SUCCESS|FAILED`, `**Verdict:** APPROVED|REJECTED`) always
+  stay verbatim in English — the state machine parses them with English-anchored regexes.
 
-**2. Rodar a esteira:**
+## How to run the tests
 
-```
-/esteira            # uma passada (uma varredura do board)
-/loop /esteira      # heartbeat (auto-ritmado) — ou /loop 15m /esteira
-```
-
-**3. Recall + ingest usam o MESMO `kb.db` default.** O driver chama `kb/recall.mjs`
-(READ, antes da estação → injeta o bloco `## 📚 Memória relevante` no prompt) e
-`kb/ingest.mjs` (WRITE, depois do artefato) **sem** `--db` — ambos resolvem o default
-`kb.db` **ancorado na raiz do repo** (independente do CWD). Não passe `--db`: apontar
-para outro arquivo faria a memória escrita nunca ser lida de volta.
-
-**Smoke (evidência offline de recall + ingest):**
+Everything runs offline with the fake embedding provider:
 
 ```bash
-cd kb && KB_FAKE_EMBEDDINGS=1 node e2e_smoke.mjs   # imprime o bloco de memória + antes/depois
-cd kb && KB_FAKE_EMBEDDINGS=1 npm test             # suíte completa, 100% offline
+cd kb && KB_FAKE_EMBEDDINGS=1 npm test            # full suite (node --test)
+cd kb && KB_FAKE_EMBEDDINGS=1 node e2e_smoke.mjs  # smoke: recall + ingest, before/after
 ```
 
-> Bootstrap inicial em WLN-15. Os demais tickets do épico a própria esteira executa (dogfood).
+If you switch Node versions and hit a `NODE_MODULE_VERSION` mismatch from the native module,
+rebuild it:
+
+```bash
+cd kb && npm rebuild better-sqlite3
+```
+
+## Project layout
+
+```
+kb/                       Local vector knowledge base (the agents' memory)
+  seed.mjs                  Build/populate kb.db from the repo docs
+  recall.mjs                Query the KB (READ) → "## 📚 Relevant memory" block
+  ingest.mjs                Write an artifact to the KB (WRITE)
+  e2e_smoke.mjs             Offline smoke for recall + ingest
+  index.js                  Library entry point
+.claude/skills/lane/      The /lane orchestrator (SKILL.md = the driver)
+.claude/agents/           The stations: context-builder.md, executor.md, reviewer.md
+CLAUDE.md                 Full project contract (state machine, handoffs, board IDs)
+```
