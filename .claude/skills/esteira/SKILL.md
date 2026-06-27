@@ -17,6 +17,20 @@ de estágio nem refaz trabalho já concluído.
 
 ### Como derivar o estágio (olhando `list_comments`, do mais recente p/ o mais antigo)
 
+0. **Kick-back (invalida artefatos antigos).** Ache o `## ⛔ Kick-back: <motivo>` mais
+   recente (maior `createdAt`) → chame seu `createdAt` de **`KB_TS`**. Esse comentário é um
+   **sinal humano** (não um artefato de estação). Se existir, **TODO artefato com `createdAt
+   < KB_TS` fica invalidado** — não conta na derivação. As regras 1-6 abaixo passam a olhar
+   **somente** artefatos com `createdAt > KB_TS`. Sem kick-back, `KB_TS = -∞` e nada muda
+   (comportamento idêntico ao anterior — regras 1-6 intactas). Efeitos:
+   - **Anti-loop:** seja `N` = nº de comentários `## ⛔ Kick-back:` no ticket. Se `N >=
+     KICKBACK_CAP` (default **2**, configurável) → `blocked` (não reabra; vira gate humano).
+     Esse cap é **independente** do limite de 3 reviews REJECTED (regra 2).
+   - Senão, se **não há nenhum artefato com `createdAt > KB_TS`** (caso típico logo após o
+     kick-back) → cai na regra 6 → `understand`: o ticket **reabre** p/ reavaliar do zero
+     (o spec antigo pode estar furado). O `<motivo>` do kick-back é passado ao
+     `context-builder` na reabertura. A revert do merge em `production` e o move p/ `In
+     Progress` acontecem no passo **c0**.
 1. Último `## 🔍 Review` = **APPROVED** → **integra + move p/ status `To Review`** (gate humano — ver passo c2)
 2. Último `## 🔍 Review` = **REJECTED**:
    - nº de reviews REJECTED < 3 → `execution`
@@ -32,20 +46,75 @@ de estágio nem refaz trabalho já concluído.
 
 ## Passos da varredura
 
-1. `list_issues` por **ID do projeto** (`project: "9a2f315c-8def-4698-ba9a-8d0a680cda13"` — use o **ID**, não o nome, que pode mudar), `state: "In Progress"`. Vazio → "nada na esteira", pare.
+0. **Resolver coordenadas por nome (ANTES de tudo).** Os IDs de status/label do CLAUDE.md
+   são apenas **cache/fallback** — o board pode ser reordenado/recriado e os IDs mudam
+   silenciosamente. Resolva os IDs **ao vivo, por nome**, no início de cada sweep e use
+   os resolvidos no resto dos passos:
+   1. **Status** — `list_issue_statuses` com `team: "3c0058ed-759f-4678-b219-4d34d0f533d7"`
+      (Team por ID = âncora estável). Mapeie por **nome exato** (case-sensitive):
+      `Todo`, `In Progress`, `To Review`, `Done`, `Canceled` → IDs ao vivo.
+   2. **Labels** — `list_issue_labels` com o mesmo `team`. Filtre o grupo `stage`
+      (`9e921002-79e5-4435-92af-b2f42025b724`) e mapeie por nome:
+      `stage:understand`, `stage:execution`, `stage:review`, `stage:blocked` → IDs ao vivo.
+      (`stage:sign-off` é **deprecado** — ignore.)
+   3. **Reconcilie** cada nome com o ID hardcoded do CLAUDE.md. Em **divergência**, o
+      **resolvido ao vivo vence**; anote `(<nome>: hardcoded <id> → ao vivo <id>)` para o
+      relatório (passo 4).
+   4. **Fallback:**
+      - **Status canônico ausente** (algum dos 5 nomes não aparece) → **ABORTE o sweep**
+        com erro claro (`Coordenada de status '<nome>' não resolvida — board renomeado?`).
+        Sem status confiável não há como mover tickets com segurança.
+      - **Label `stage:*` ausente** → use o **ID hardcoded** desse label + emita **warning**
+        no relatório (o pipeline segue; label é só espelho auto-curável).
+   5. **Use os IDs resolvidos** em todos os passos seguintes: `list_issues` (status `In
+      Progress`), reconciliação de label (2.b/2.e), move p/ `To Review` (c2), pull do
+      `Todo` e todas as comparações de status. Onde os passos abaixo dizem "ver CLAUDE.md",
+      leia "**use o ID resolvido no passo 0** (CLAUDE.md como fallback)".
+
+1. `list_issues` por **ID do projeto** (`project: "9a2f315c-8def-4698-ba9a-8d0a680cda13"` — use o **ID**, não o nome, que pode mudar), `state: "In Progress"` (**ID resolvido no passo 0**). Vazio → "nada na esteira", pare.
 
 2. Para cada ticket (independentes podem rodar em paralelo):
-   a. `list_comments` → calcule o **estágio derivado**.
+   a. `list_comments` → calcule o **estágio derivado** (incluindo a **regra 0 de
+      kick-back**: ache o `## ⛔ Kick-back:` mais recente → `KB_TS` e ignore artefatos com
+      `createdAt < KB_TS`). Se o sinal mais recente é um kick-back, trate no passo **c0**.
    b. **Reconcilie o label**: se o label `stage:*` atual ≠ estágio derivado, grave o
-      correto via `save_issue` `labels: ["<ID-do-estágio>"]` (sempre por **ID**, ver CLAUDE.md).
+      correto via `save_issue` `labels: ["<ID-do-estágio>"]` (sempre por **ID resolvido no
+      passo 0**; CLAUDE.md como fallback).
    c. Se o estágio for `blocked` → **pule** (é do humano).
+   c0. **Kick-back (revert + reabertura).** Aplica-se quando o sinal mais recente do ticket
+       é um `## ⛔ Kick-back: <motivo>` (i.e. `KB_TS` existe e não há artefato com `createdAt
+       > KB_TS`). Antes de tratar o ticket como `understand`, **desfaça a integração** e
+       reabra — tudo **idempotente** (rodar 2x não duplica revert nem move duas vezes):
+       1. **Anti-loop primeiro.** Se `N` (nº de `## ⛔ Kick-back:`) `>= KICKBACK_CAP`
+          (default **2**, configurável) → marque `blocked` + comentário explicando o cap e
+          **não** reabra (vira gate humano). Cap distinto do limite de 3 REJECTED.
+       2. **Revert idempotente do merge** (só se `esteira/<TICKET-ID>` está integrado em
+          `production`):
+          - **Integrado?** `git merge-base --is-ancestor esteira/<TICKET-ID> production`
+            (exit 0 = integrado; exit≠0 = nunca mergeou → pule a revert, vá ao passo 3).
+          - **Ache o merge:** `git log production --merges --grep "esteira/<TICKET-ID>"
+            --format=%H -n 1` → `<merge-sha>`.
+          - **Já revertido?** `git log production --grep "This reverts commit <merge-sha>"
+            --format=%H -n 1` — se **não-vazio**, a revert já existe → **pule** (idempotente).
+          - **Reverta:** `git revert -m 1 --no-edit <merge-sha>` em `production` (mainline =
+            1 º pai). **Use `git revert`, nunca `reset --hard`** — `production` é publicada.
+          - **Conflito** sem resolução segura → `git revert --abort`, marque `blocked` +
+            comentário (gate humano) e **não** reabra.
+       3. **Reabra o ticket:** `save_issue state: "<id-In-Progress>"` (ID resolvido no passo
+          0). **Não** sete o label à mão — a derivação cai em `understand` (regra 6) e o
+          passo `e` reconcilia o label. A branch `esteira/<TICKET-ID>` é **reaproveitável**.
+       4. **Reexecute** seguindo o passo `d` como um ticket em `understand`, passando o
+          `<motivo>` do kick-back ao `context-builder` (o spec antigo foi invalidado pela
+          regra 0). O ticket reaberto fica **ativo** (ocupa a vaga WIP=1; a auto-sequência
+          do passo 3 não puxa novo `Todo` enquanto ele estiver ativo).
    c2. Se o estágio for `sign-off` (último Review **APPROVED**) → **integre e finalize p/ você**:
        - **Merge idempotente:** se `esteira/<TICKET-ID>` ainda **não** é ancestral de
          `production` (`git merge-base --is-ancestor esteira/<TICKET-ID> production` → falso),
          faça o merge `esteira/<TICKET-ID>` → `production` **agora**. Se já é ancestral, nada.
        - **Conflito** sem resolução segura → marque `blocked` + comentário (vira gate humano).
-       - **Mova o ticket p/ o status `To Review`** (`save_issue state: "<id-To-Review>"`, ver
-         CLAUDE.md). Ele **sai de `In Progress`**: não ocupa a vaga ativa nem é varrido de novo.
+       - **Mova o ticket p/ o status `To Review`** (`save_issue state: "<id-To-Review>"` —
+         **ID resolvido no passo 0**, CLAUDE.md como fallback). Ele **sai de `In Progress`**:
+         não ocupa a vaga ativa nem é varrido de novo.
          Fica te aguardando — você move `To Review` → `Done` (aprovou) ou → `Todo` (reprovou).
    d. Senão, rode o agente da estação **uma vez**. Antes de montar o prompt e acionar
       o subagente, faça o **Recall** (passo `d.0`) e prefixe o bloco de memória ao prompt.
@@ -126,8 +195,19 @@ de estágio nem refaz trabalho já concluído.
       7. **Provider `--fake` vs real** (mesma convenção do `d.0.5`). Por padrão use o
          provider **real** (transformers); **offline/sem modelo** → `--fake` (ou
          `KB_FAKE_EMBEDDINGS=1`). Qualquer falha do provider cai no fallback (passo 6).
-   e. **Recalcule** o estágio derivado (agora com o artefato novo) e grave o label
-      correspondente por ID. Verifique no retorno do `save_issue` que `labels` contém o esperado.
+   e. **Recalcule** o estágio derivado (agora com o artefato novo) e reconcilie a saída:
+      - Se o estágio recomputado for `sign-off` (você acabou de postar um Review
+        **APPROVED**) → **execute o procedimento do passo c2 inline, nesta MESMA
+        varredura**: merge idempotente de `esteira/<TICKET-ID>` → `production` (só se ainda
+        não for ancestral; conflito sem resolução segura → `blocked` + comentário) e mova o
+        ticket p/ o status `To Review` (`save_issue state: "<id-To-Review>"`, ID resolvido
+        no passo 0). **NÃO grave label** — `stage:sign-off` é deprecado e não há ID de
+        label válido p/ ele; o ticket sai de `In Progress` já integrado, aguardando seu
+        gate humano. (O `c2` no topo do passo 2 continua cobrindo, como auto-cura, tickets
+        aprovados em sweeps anteriores.)
+      - Caso contrário, **grave o label** correspondente ao estágio por ID (resolvido no
+        passo 0; CLAUDE.md como fallback). Verifique no retorno do `save_issue` que
+        `labels` contém o esperado.
 
 3. **Auto-sequência (mantém a esteira ocupada).** A esteira é **pull-based com WIP=1**: no
    máximo **um** ticket *ativo* por vez (ativo = estágio derivado em `understand`,
@@ -139,7 +219,8 @@ de estágio nem refaz trabalho já concluído.
      ocupam a vaga. A esteira **se auto-inicia**: não há gate humano de entrada. Só NÃO puxe
      se já houver um ticket ativo, ou se nenhum `Todo` for elegível.
    - Quando o gatilho bate, puxe **um** `Todo` e mova p/ `In Progress` via `save_issue`
-     (sem mexer no label de stage — ele entra sem artefato = `understand`).
+     (status por **ID resolvido no passo 0**, CLAUDE.md como fallback; sem mexer no label
+     de stage — ele entra sem artefato = `understand`).
    - **Qual `Todo`** — considere só os **elegíveis**: todos os `blockedBy` já **integrados**,
      i.e. em `To Review` **ou** `Done` (**não** espere o `Done` humano — entrar em `To Review`
      já mergeou em `production` no passo c2). Entre os elegíveis, ordene por:
@@ -151,8 +232,10 @@ de estágio nem refaz trabalho já concluído.
      `blocked`), **não** puxe e diga isso no relatório — a esteira fica ociosa até um
      `blockedBy` chegar a `To Review` (integrado) ou um `blocked` ser resolvido.
 
-4. Reporte: cada ticket, estágio antes → depois, o que ficou aguardando humano, e se
-   algum `Todo` foi puxado (qual e por quê) ou por que nenhum foi.
+4. Reporte: comece com a linha **"Coordenadas resolvidas"** (passo 0) — liste as
+   divergências hardcoded × ao vivo e os warnings de label ausente, ou "sem divergências".
+   Depois: cada ticket, estágio antes → depois, o que ficou aguardando humano, e se algum
+   `Todo` foi puxado (qual e por quê) ou por que nenhum foi.
 
 ## Regras
 
@@ -169,12 +252,45 @@ de estágio nem refaz trabalho já concluído.
   `To Review` e roda o próximo elegível. Só para quando há `blocked` ou nenhum `Todo` elegível.
 - **Nunca** mova p/ `Done` — é gate humano de saída. A esteira para no `To Review` (o merge já
   ocorreu); você valida e move `To Review` → `Done`.
-- **Kick-back:** se você reprovar um ticket em `To Review`/`Done` e movê-lo p/ `Todo`, como os
-  artefatos são a fonte de verdade, **mover de status não basta** p/ reexecutar: é preciso
-  **reverter o merge** em `production` e invalidar os artefatos daquele ticket (a review
-  aprovada faz o estágio derivar de novo `To Review`). Fluxo de kick-back automático: **a refinar.**
+- **Kick-back (reprovar em `To Review`/`Done`):** como os artefatos são a fonte de verdade,
+  **mover o status de volta não basta** p/ reexecutar — a review APPROVED antiga continua
+  derivando `To Review` e o merge já está em `production`. O sinal humano é um comentário com
+  header fixo `## ⛔ Kick-back: <motivo>` (sinal, não artefato de estação). Com ele, o driver,
+  de forma **automática e idempotente** (ver regra 0 da derivação + passo c0):
+  1. **Invalida** todo artefato com `createdAt < createdAt do kick-back mais recente` (`KB_TS`)
+     — a derivação passa a olhar só artefatos posteriores, então o ticket volta a `understand`.
+  2. **Reverte o merge** em `production` (`git merge-base --is-ancestor` + `git log --merges
+     --grep` p/ achar o merge + checagem de revert prévio + `git revert -m 1 --no-edit`;
+     **nunca** `reset --hard`). Conflito sem resolução segura → `blocked`.
+  3. **Reabre** o ticket em `In Progress` no estágio **understand** (reavaliar do zero — o spec
+     antigo pode estar furado), passando o `<motivo>` ao `context-builder`.
+  4. **Anti-loop:** `N` = nº de comentários `## ⛔ Kick-back:`; se `N >= KICKBACK_CAP`
+     (default **2**, configurável) → `blocked` em vez de reabrir. Cap **independente** do
+     limite de 3 REJECTED.
 - **Puxar do `Todo`** só é permitido pela auto-sequência (passo 3): quando não há ticket
   ativo e existe `Todo` elegível. A esteira se auto-inicia — **não** espera gate humano de
   entrada. A saída (`→ Done`) continua sendo gate humano.
-- Label é mutuamente exclusivo no grupo `stage`: passar `["<ID>"]` substitui o anterior.
+- **Coordenadas por nome:** os IDs de status/label são **resolvidos por nome a cada sweep**
+  (passo 0); a tabela do CLAUDE.md é só cache/fallback. Os nomes canônicos das colunas
+  (`Todo`/`In Progress`/`To Review`/`Done`/`Canceled`) e labels (`stage:understand/execution/review/blocked`)
+  são contrato — não os renomeie.
+- Label é mutuamente exclusivo no grupo `stage`: passar `["<ID>"]` (ID resolvido no passo 0)
+  substitui o anterior.
 - Se o estágio derivado e o label divergirem, **o artefato vence** — corrija o label, não o artefato.
+
+## Cenário: kick-back (reprovação na saída)
+
+DIM-XX está em `To Review` (Review APPROVED, merge já em `production`). Você revisa, não
+gosta, e cola um comentário `## ⛔ Kick-back: faltou tratar o caso vazio`.
+
+1. **Caminho feliz.** No próximo sweep, a regra 0 acha o kick-back (`KB_TS`) e invalida o
+   Context Spec/Work Log/Review antigos (todos com `createdAt < KB_TS`). Não há artefato
+   posterior → estágio `understand`. O passo c0 confirma que `esteira/DIM-XX` é ancestral de
+   `production`, acha o merge, reverte com `git revert -m 1 --no-edit`, e reabre o ticket em
+   `In Progress`. O `context-builder` recebe o `<motivo>` e refaz o spec.
+2. **Idempotência.** Se o sweep rodar de novo antes de um novo artefato existir, c0 vê que já
+   há um commit `This reverts commit <merge-sha>` em `production` → **pula** a revert; e o
+   ticket já está em `In Progress` → o `save_issue` é no-op. Nada duplica.
+3. **Anti-loop.** Se este é o **2º** `## ⛔ Kick-back:` do ticket (`N >= KICKBACK_CAP` = 2),
+   o driver marca `blocked` + comentário em vez de reabrir — evita ping-pong infinito. Esse
+   teto é separado do limite de 3 reviews REJECTED.

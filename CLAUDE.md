@@ -28,6 +28,7 @@ ou errado nunca causa regressão/retrabalho. "Sem label" ≠ "novo"; novo = sem 
 
 Estágio derivado (mais recente → mais antigo):
 ```
+Kick-back (⛔)          → invalida artefatos < createdAt do kick-back; reverte merge + reabre em understand (cap 2 → blocked)
 Review APPROVED        → integra + move p/ status `To Review` (gate humano)
 Review REJECTED (<3)   → execution  | (>=3) → blocked
 Work Log SUCCESS       → review
@@ -44,9 +45,9 @@ Tentativas = nº de comentários `## 🔍 Review` REJECTED. Limite: 3 → `block
 
 | Evento | Ação da esteira |
 |---|---|
-| Review APPROVED | **auto:** merge `esteira/<TICKET-ID>` → `production` (idempotente) **e move o ticket p/ `To Review`**. A fila **não** espera você. |
+| Review APPROVED | **auto, na mesma varredura:** merge `esteira/<TICKET-ID>` → `production` (idempotente) **e move o ticket p/ `To Review`**. A fila **não** espera você. |
 | você move `To Review` → `Done` | só fecha o ticket (o merge já ocorreu) |
-| você move um ticket → `Todo` (reprovou) | kick-back: requer **reverter o merge** + invalidar os artefatos do ticket (mover status não basta — artefato é a verdade). *A refinar.* |
+| você reprova: move `To Review`/`Done` → `Todo` + comenta `## ⛔ Kick-back: <motivo>` | **auto (idempotente):** o kick-back invalida os artefatos anteriores (createdAt < o dele), reverte o merge em `production` (`git revert -m 1`), e reabre o ticket em `In Progress`/`understand` passando o `<motivo>` ao context-builder. Mover status não basta — o artefato é a verdade. Anti-loop: 2 kick-backs → `blocked`. |
 
 **Autonomia & WIP=1:** a esteira roda o épico inteiro sozinha, empilhando os tickets em
 `To Review` p/ você validar quando quiser. Ela só para por **bloqueio real** (`blocked`) ou
@@ -74,20 +75,32 @@ O driver usa a KB em dois momentos por ticket (read + write):
 > CLIs `kb/recall.mjs` e `kb/ingest.mjs` são a superfície que o driver chama (DIM-17).
 > Enquanto o wiring não chega, a esteira roda só sobre o Linear (como a v1).
 
-## IDs do Linear (coordenadas da esteira) — **sempre use ID, não nome**
+## IDs do Linear (coordenadas da esteira)
+
+**Team e Project são âncoras estáveis — sempre use o ID.** Já os **status e labels são
+resolvidos por NOME a cada sweep** (passo 0 do skill `/esteira`, via `list_issue_statuses`
++ `list_issue_labels`): a tabela de IDs abaixo é apenas **cache/fallback**. Se o board for
+reordenado/recriado os IDs mudam, e o driver passa a usar os IDs ao vivo (reportando a
+divergência) sem quebrar o sweep.
+
+> **Nomes canônicos = contrato (não renomeie).** As colunas `Todo` / `In Progress` /
+> `To Review` / `Done` / `Canceled` e os labels `stage:understand` / `stage:execution` /
+> `stage:review` / `stage:blocked` são resolvidos por esses nomes exatos a cada sweep.
+> Renomear qualquer um deles quebra a resolução: status canônico ausente **aborta o sweep**;
+> label `stage:*` ausente cai no ID hardcoded abaixo + warning.
 
 - Team (atual: "Lane", key DIM): `3c0058ed-759f-4678-b219-4d34d0f533d7`
 - Project (atual: "Auto Lane"): `9a2f315c-8def-4698-ba9a-8d0a680cda13`
 - Épico v3: **DIM-14**
 
-Status (⚠️ "To Review" reusou o ID do antigo "Done"; "Done" agora é um ID novo):
+Status — **cache/fallback (resolvido por nome a cada sweep)** (⚠️ "To Review" reusou o ID do antigo "Done"; "Done" agora é um ID novo):
 - Todo: `c7b52570-af37-4d8e-abd3-95d927cae20c`
 - In Progress: `e26d59a8-f02e-4959-ae24-ee57e81f4534`
 - **To Review: `8f89ea97-e4c4-4625-a29a-56aab536363f`** (era o ID do antigo "Done")
 - **Done (novo): `be50bf53-88ac-4021-8bdf-774695cff007`**
 - Canceled: `74f37c47-98d8-47a8-a7e7-f7936f4bc207`
 
-Labels (grupo `stage` = `9e921002-79e5-4435-92af-b2f42025b724`) — sub-estações de `In Progress`:
+Labels — **cache/fallback (resolvido por nome a cada sweep)** (grupo `stage` = `9e921002-79e5-4435-92af-b2f42025b724`) — sub-estações de `In Progress`:
 - stage:understand: `c1e0dfb5-423f-49c5-915b-686c025b1dd7`
 - stage:execution: `58c3331f-3539-4e5b-b13f-16a9601aea0b`
 - stage:review: `e948cf81-3414-4c55-a62d-c7c9192e5db7`
