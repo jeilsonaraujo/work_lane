@@ -1,7 +1,18 @@
 // Unit tests for the PURE pre-post format validation (d.0.6).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validate, validateUnderstand, validateExecution, validateReview } from './validate.mjs';
+import { validate, validateTriage, validateUnderstand, validateExecution, validateReview } from './validate.mjs';
+
+test('triage: valid Pre-Triage with header passes', () => {
+  const body = '## 🎯 Pre-Triage\n\n**Objective:** ship x\n**Overview:** y';
+  assert.deepEqual(validateTriage(body), { ok: true });
+});
+
+test('triage: missing header fails', () => {
+  const r = validateTriage('**Objective:** ship x (no header)');
+  assert.equal(r.ok, false);
+  assert.match(r.error, /header/);
+});
 
 test('understand: valid spec with empty Blockers passes', () => {
   const body = '## 🧭 Context Spec\n\n**Scope:** x\n**Blockers:** ';
@@ -57,6 +68,7 @@ test('review: more than one Verdict fails', () => {
 });
 
 test('validate dispatches by station and rejects unknown', () => {
+  assert.equal(validate('triage', '## 🎯 Pre-Triage\n**Objective:** x').ok, true);
   assert.equal(validate('understand', '## 🧭 Context Spec\n**Blockers:** ').ok, true);
   assert.equal(validate('bogus', 'x').ok, false);
 });

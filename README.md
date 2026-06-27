@@ -13,18 +13,24 @@ You don't drive Work Lane ticket-by-ticket. You design the lane and let it pull 
 own. A ticket moves through the board like this:
 
 ```
-Todo ─(auto)─► In Progress ( understand → execution → review ) ─► To Review ─(human)─► Done
+Todo ─(pre-triage in place, auto)─► Triage ─(human: approve objective)─► In Progress ( understand → execution → review ) ─► To Review ─(human)─► Done
 ```
 
-- **Entry is automatic.** The lane is WIP=1 and keeps itself busy: whenever there is no active
-  ticket and an eligible `Todo` exists, it pulls the next one — no human entry gate.
-- **Human gate only on exit.** The single place a human is required is `To Review → Done`,
-  where you validate the finished work.
-- **Stations map to agents.** `context-builder` (understand) → `executor` (execution) →
-  `reviewer` (review).
+- **The lane self-starts.** WIP=1 applies **only to the active slot**; the pre-triage phase runs
+  **in parallel**. Whenever there are eligible `Todo`s the lane pre-triages up to **3 per sweep**
+  in place and moves each into `Triage` — no human is needed to *start* a ticket, and `Triage`
+  (a **pure signal column**) never blocks the conveyor.
+- **Two symmetric human gates.** At the **entry**, the `Triage` gate: the `triager` agent
+  distills the ticket's **objective** into a `## 🎯 Pre-Triage` artifact **while it is still in
+  `Todo`**, then the lane moves it to `Triage` and holds; you approve it by moving
+  `Triage → In Progress` (or add a `## ⛔ Kick-back:` comment to bounce the objective, which
+  re-triages it once). At the **exit**, the `To Review → Done` gate, where you validate the
+  finished work. The lane does everything in between on its own.
+- **Stations map to agents.** `triager` (pre-triage) → `context-builder` (understand) →
+  `executor` (execution) → `reviewer` (review).
 - **Artifacts are the source of truth.** Each station writes its result as a comment on the
-  ticket: `## 🧭 Context Spec`, `## 🔧 Work Log`, `## 🔍 Review`. The driver derives the
-  current stage from these artifacts, not from the label.
+  ticket: `## 🎯 Pre-Triage`, `## 🧭 Context Spec`, `## 🔧 Work Log`, `## 🔍 Review`. The
+  driver derives the current stage from these artifacts, not from the label.
 
 The orchestrator is the `/lane` skill (`.claude/skills/lane/SKILL.md`). One invocation runs
 one sweep of the board; a loop wrapper turns it into a heartbeat. See `CLAUDE.md` for the full
@@ -57,11 +63,16 @@ them.** A missing canonical status aborts the sweep.
 
 **Columns (statuses) that must exist, with these exact names:**
 
-`Backlog` · `Todo` · `In Progress` · `To Review` · `Done` · `Canceled`
+`Backlog` · `Todo` · `Triage` · `In Progress` · `To Review` · `Done` · `Canceled`
 
-**Stage labels under a `stage` label group** (the sub-stations of `In Progress`):
+`Triage` is the **entry human gate** — a human-created workflow status between `Todo` and
+`In Progress` (the Linear API can't create workflow statuses, so you add it by hand). Until it
+exists the pre-triage gate is simply inert: the lane finds nothing in `Triage` and the rest of
+the pipeline runs unchanged.
 
-`stage:understand` · `stage:execution` · `stage:review` · `stage:blocked`
+**Stage labels under a `stage` label group** (the entry gate + the sub-stations of `In Progress`):
+
+`stage:triage` · `stage:understand` · `stage:execution` · `stage:review` · `stage:blocked`
 
 The `stage:*` label is only a mirror of the derived stage; the artifacts (comments) remain the
 real source of truth.
@@ -126,15 +137,19 @@ talks to Linear through the **MCP server**. The repo also ships an **opt-in** de
 driver as a standalone Node package in `lane/` that encodes the same state machine in pure,
 unit-tested modules and talks to Linear over its **GraphQL API** — **no MCP at runtime**.
 
-- **Pure core (unit-tested, offline):** `lane/derive.mjs` (derivation rules 1–6 + the canonical
-  Verdict/Status/Blockers regexes, forward-only), `lane/validate.mjs` (the pre-post format gate),
-  `lane/decide.mjs` (WIP=1 + the auto-sequence ordering: epic-continuity → priority → number).
+- **Pure core (unit-tested, offline):** `lane/derive.mjs` (the derivation rules + the canonical
+  Verdict/Status/Blockers regexes; recognizes `## 🎯 Pre-Triage` and the `## ⛔ Kick-back:`
+  objective re-run, forward-only downstream), `lane/validate.mjs` (the pre-post format gate),
+  `lane/decide.mjs` (returns a composite plan `{ active, pretriage[], reconcile[] }` — the WIP=1
+  active In-Progress action plus up to `PRETRIAGE_CAP`=3 in-place pre-triages plus pending
+  `move-to-triage` reconciles; `Triage` is a pure signal; ordering: epic-continuity → priority →
+  number).
 - **Thin I/O:** `lane/linear.mjs` (GraphQL client over global `fetch`, `LINEAR_API_KEY` from
   env), `lane/merge.mjs` (idempotent `esteira/<ID>` → `production` merge; a conflict returns a
   blocked signal, never auto-resolved), `lane/board.mjs` / `lane/post.mjs` (glue).
 - **Runner:** `scripts/lane-tick.sh` is a `flock -n` single-instance wrapper that invokes the
   sweep (`node lane/run.mjs`) and dispatches the station workers in `.claude/commands/`
-  (`/understand`, `/execute`, `/review`) via `claude -p`.
+  (`/triage`, `/understand`, `/execute`, `/review`) via `claude -p`.
 
 Run it:
 
@@ -192,12 +207,12 @@ kb/                       Local vector knowledge base (the agents' memory)
   e2e_smoke.mjs             Offline smoke for recall + ingest
   index.js                  Library entry point
 .claude/skills/lane/      The /lane orchestrator (SKILL.md = the prose driver)
-.claude/agents/           The stations: context-builder.md, executor.md, reviewer.md
-.claude/commands/         Station workers for the code driver (/understand, /execute, /review)
+.claude/agents/           The stations: triager.md, context-builder.md, executor.md, reviewer.md
+.claude/commands/         Station workers for the code driver (/triage, /understand, /execute, /review)
 lane/                     Opt-in code driver: pure derive/validate/decide + Linear/git I/O
-  derive.mjs                Derivation rules 1–6 + canonical regexes (PURE)
+  derive.mjs                Derivation rules + canonical regexes, incl. the entry pre-triage gate (PURE)
   validate.mjs              Pre-post format gate (PURE)
-  decide.mjs                WIP=1 + auto-sequence ordering (PURE)
+  decide.mjs                Composite plan: WIP=1 active slot + cap-3 in-place pre-triage + reconcile (PURE)
   linear.mjs                GraphQL client (global fetch, injectable)
   merge.mjs                 Idempotent esteira/<ID> → production merge
   run.mjs                   Sweep entrypoint (--dry-run prints the action, no side effects)

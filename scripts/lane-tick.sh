@@ -13,6 +13,14 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK="$REPO_ROOT/.claude/esteira.lock"
+MKLOCK="$REPO_ROOT/.claude/esteira.lock.d"
+LOCK_TTL=1800   # 30 min, same TTL as the prose /lane mkdir lock.
+
+# --dry-run stays PURE/offline (no I/O, no lock dir) — detect it among the args.
+DRY_RUN=0
+for arg in "$@"; do
+  [ "$arg" = "--dry-run" ] && DRY_RUN=1
+done
 
 # fd 9 → lock file; flock -n returns non-zero if another sweep already holds it.
 exec 9>"$LOCK"
@@ -21,24 +29,50 @@ if ! flock -n 9; then
   exit 0
 fi
 
+# Unified lock (LIVE only): cross-honor the prose /lane mutual-exclusion lock so a code
+# sweep and a `/loop /lane` sweep never run concurrently (preserving WIP=1 / one-driver).
+# We replicate the prose lock's 30-min stale-TTL sweep: a dir older than the TTL is a
+# dead holder (crashed before its EXIT trap) and is reclaimed. --dry-run skips this
+# entirely so its behavior stays byte-for-byte identical (offline, no I/O).
+if [ "$DRY_RUN" -eq 0 ]; then
+  if [ -d "$MKLOCK" ]; then
+    lock_age=$(( $(date +%s) - $(stat -c %Y "$MKLOCK") ))
+    if [ "$lock_age" -ge "$LOCK_TTL" ]; then
+      echo "lane-tick: stale prose lock (${lock_age}s) — reclaiming." >&2
+      rm -rf "$MKLOCK"
+    fi
+  fi
+  if ! mkdir "$MKLOCK" 2>/dev/null; then
+    echo "lane-tick: prose /lane lock held (esteira.lock.d) — aborting." >&2
+    exit 0
+  fi
+  trap 'rm -rf "$MKLOCK"' EXIT
+fi
+
 # Node is not on the default PATH in this environment — prepend it.
 export PATH="$HOME/.nvm/versions/node/v22.22.3/bin:$PATH"
 
-# 1. Deterministic core: derive the next action. Under --dry-run this has NO side
-#    effects (no Linear writes, no git). The decision is always inspectable first.
+# Deterministic core + live cutover. Under --dry-run, run.mjs derives and PRINTS the
+# composite plan with NO side effects (no Linear writes, no git). Live (no --dry-run),
+# run.mjs builds the board, decides, prints the plan, THEN dispatches it (lane/dispatch.mjs):
+# the station workers (claude -p), the validated posting (lane/post.mjs) and the idempotent
+# merge (lane/merge.mjs). The decision is always printed before any mutation.
 node "$REPO_ROOT/lane/run.mjs" "$@"
 
-# 2. Worker wiring (LIVE cutover — invoked by the live sweep, not under --dry-run).
-#    Once run.mjs resolves an action, the matching station worker is dispatched
-#    headlessly and its stdout artifact is validated + posted + ingested:
-#
-#      claude -p "/understand wln=51"   # → ## 🧭 Context Spec
-#      claude -p "/execute   wln=51"    # → ## 🔧 Work Log
-#      claude -p "/review    wln=51"    # → ## 🔍 Review
-#
-#    Each worker (.claude/commands/*.md) does Recall (kb/recall.mjs), adopts the
-#    role from .claude/agents/<context-builder|executor|reviewer>.md, and prints
-#    ONLY the artifact. The driver then runs lane/validate.mjs → lane/post.mjs
-#    (createComment → kb/ingest.mjs → set status/label), and on an APPROVED review
-#    lane/merge.mjs integrates esteira/<ID> → production. This dispatch is the
-#    deliberately-deferred live-cutover layer (see the WLN-51 Work Log).
+# Live-cutover dispatch (lane/dispatch.mjs, invoked inside run.mjs's live path):
+#   - active (understand|execution|review|merge|idle): the WIP=1 In-Progress action.
+#       understand → /understand (## 🧭 Context Spec); execution → /execute (## 🔧 Work Log);
+#       review → /review (## 🔍 Review). merge: NO worker — idempotent esteira/<ID> →
+#       production, then move To Review + set the green terminal stage:done (SKILL c2/e);
+#       a conflict is forward-only (logged, left for a human). idle: no-op.
+#   - pretriage(from:Todo):   /triage (## 🎯 Pre-Triage), post, THEN move Todo → Triage.
+#   - pretriage(from:Triage): legacy empty-Triage ticket — /triage in place, NO move.
+#   - move-to-triage:         reconcile — a Todo already carrying a Pre-Triage: just move
+#                             Todo → Triage (NO re-triage; idempotent by artifact).
+#   Order: active → reconcile → pretriage (≤ PRETRIAGE_CAP=3). A ticket holding in Triage
+#   WITH its Pre-Triage is a pure signal (human's turn) — the lane runs nothing on it.
+#   Each worker (.claude/commands/*.md) does Recall, adopts its role and prints ONLY the
+#   artifact; the driver runs lane/validate.mjs → lane/post.mjs (createComment →
+#   kb/ingest.mjs → status/label). Worker error/timeout or a malformed artifact is logged
+#   and SKIPPED — the d.0.6 gate refuses to post outside the template, and no single
+#   failure aborts the sweep.

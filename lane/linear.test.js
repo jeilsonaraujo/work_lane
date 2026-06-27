@@ -1,7 +1,7 @@
 // Unit tests for the Linear GraphQL client, with a MOCKED fetch (NO live network).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createClient } from './linear.mjs';
+import { createClient, STAGE_DONE } from './linear.mjs';
 
 // Build a fake fetch that records calls and returns a canned GraphQL payload.
 function makeFetch(payload, { ok = true, status = 200 } = {}) {
@@ -50,6 +50,20 @@ test('resolveLabels keeps only the stage group', async () => {
   const client = createClient({ apiKey: 'k', fetchImpl });
   const labels = await client.resolveLabels('team-1');
   assert.deepEqual(labels, { 'stage:understand': 'l-u', 'stage:blocked': 'l-b' });
+});
+
+test('resolveLabels resolves the green terminal stage:done by name (WLN-54)', async () => {
+  const fetchImpl = makeFetch({
+    data: { team: { labels: { nodes: [
+      { id: 'l-r', name: 'stage:review', parent: { id: 'g', name: 'stage' } },
+      // stage:done picked up by the `startsWith('stage:')` fallback even without a parent
+      { id: 'l-done', name: 'stage:done', parent: null },
+    ] } } },
+  });
+  const client = createClient({ apiKey: 'k', fetchImpl });
+  const labels = await client.resolveLabels('team-1');
+  assert.equal(labels[STAGE_DONE], 'l-done');
+  assert.deepEqual(labels, { 'stage:review': 'l-r', 'stage:done': 'l-done' });
 });
 
 test('listIssues returns the nodes and passes project/state vars', async () => {

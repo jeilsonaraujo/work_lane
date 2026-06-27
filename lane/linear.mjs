@@ -11,8 +11,15 @@
 export const ENDPOINT = 'https://api.linear.app/graphql';
 
 // The `stage` label group name (CLAUDE.md). Stage labels are its children and are
-// named `stage:understand` / `stage:execution` / `stage:review` / `stage:blocked`.
+// named `stage:understand` / `stage:execution` / `stage:review` / `stage:blocked` /
+// `stage:done` (green terminal label set on integration → To Review).
 export const STAGE_GROUP = 'stage';
+
+// The green terminal label set when an APPROVED ticket is integrated and moved to
+// `To Review` (SKILL c2/e). It is NOT a derived stage (no `done` in derive.mjs) — purely a
+// terminal mirror. `resolveLabels` already picks it up via the `startsWith('stage:')` filter,
+// so no functional change is needed here; this constant just documents the parity.
+export const STAGE_DONE = 'stage:done';
 
 export function createClient({
   apiKey = process.env.LINEAR_API_KEY,

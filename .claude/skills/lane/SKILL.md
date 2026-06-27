@@ -1,6 +1,6 @@
 ---
 name: lane
-description: Runs ONE sweep of the Work Lane task pipeline on Linear (project Auto Lane). Reads the tickets in "In Progress", derives each one's stage from its ARTIFACTS (comments), reconciles the label, triggers the station's agent and writes the artifact. When the review approves, it integrates and moves to "To Review" (human gate). Use with /loop to run as a heartbeat.
+description: Runs ONE sweep of the Work Lane task pipeline on Linear (project Auto Lane). Pre-triages eligible Todos IN PLACE (up to 3 per sweep) and, once their objective is distilled, moves them into the "Triage" signal column; reads the active ticket in "In Progress", derives its stage from its ARTIFACTS (comments), reconciles the label, triggers the station's agent and writes the artifact. WIP=1 only for the active slot; "Triage" is a pure signal column (human's turn) that does NOT block the conveyor. Two human gates: objective approval at the entry ("Triage" → "In Progress") and result approval at the exit ("To Review" → "Done", where it integrates). Use with /loop to run as a heartbeat.
 ---
 
 # Work Lane — one sweep
@@ -27,6 +27,11 @@ per line):
 - **Status** (`## 🔧 Work Log`): `^\*\*Status:\*\*\s*(SUCCESS|FAILED)\b`
 - **Blockers** (`## 🧭 Context Spec`): line `^\*\*Blockers:\*\*` present (empty = no blockers).
 
+Two **entry-gate** markers have **no parsed enum field** (the gate is the **status** `Triage`,
+validated by a human — not a structured value): the artifact `## 🎯 Pre-Triage` (recognized by
+header presence) and the human objective kick-back `## ⛔ Kick-back:` (recognized by header
+presence; a kick-back newer than the last Pre-Triage re-runs the triager once).
+
 (Format confirmed in the agents: `.claude/agents/reviewer.md` emits `**Verdict:** APPROVED | REJECTED`,
 `executor.md` emits `**Status:** SUCCESS | FAILED`, `context-builder.md` emits `**Blockers:** …`.)
 
@@ -40,7 +45,7 @@ once before any post.
 ### How to derive the stage (looking at `list_comments`, from most recent to oldest)
 
 > **Recency short-circuit (cheap derivation).** Scan the comments **newest → oldest** and
-> **stop as soon as one of rules 1–6 decides** the stage — an older comment can never override
+> **stop as soon as one of rules 1–8 decides** the stage — an older comment can never override
 > a more recent decision. Derivation only needs, per artifact, the **header**, the single
 > **structured-field line** (the regex match), and its **`createdAt`** — it **does NOT** need
 > the full artifact body. **Do not retain full artifact bodies** in the driver's context: the
@@ -62,7 +67,23 @@ once before any post.
 5. There is a `## 🧭 Context Spec` (with the line `^\*\*Blockers:\*\*` present):
    - non-empty Blockers → `blocked`
    - otherwise → `execution`
-6. No artifact → `understand`  (entry)
+6. There is a `## ⛔ Kick-back:` (header present) and it is **newer** than the last
+   `## 🎯 Pre-Triage` → `triage` (objective re-run: the human bounced the goal at the entry gate).
+7. There is a `## 🎯 Pre-Triage` (header present) and nothing newer decided → `understand`
+   (the objective is settled; the ticket has been — or must be — moved to `Triage` to await the human entry gate).
+8. No artifact → `triage`  (entry: a brand-new ticket starts at the pre-triage phase)
+
+> **Disambiguate by STATUS** (same pattern as `sign-off`+status). Pre-triage runs **while a
+> ticket is still in `Todo`**; `Triage` is a **pure signal column** (the human's turn). So:
+> - a ticket in **`Todo`** that derives `triage` (no Pre-Triage yet, or a fresh kick-back) →
+>   **run the triager IN PLACE** (in `Todo`), then **move it `Todo → Triage`** (step 3 / `d`);
+> - a ticket in **`Todo`** that derives `understand` (a `## 🎯 Pre-Triage` is already posted) →
+>   it was pre-triaged but not moved yet → **reconcile: move `Todo → Triage`** (do NOT re-triage);
+> - a ticket in **`Triage`** that derives `understand` (Pre-Triage posted) → **pure HOLD**: the
+>   lane runs **nothing** — it is the human's turn (`Triage → In Progress`);
+> - a ticket in **`Triage`** that derives `triage` (a **legacy** empty ticket from the old model)
+>   → **run the triager IN PLACE** and leave it in `Triage`;
+> - a ticket in **`In Progress`** that derives `understand` runs the `understand` station.
 
 > **Never derive from a substring in the prose.** Only the **structured field** (line anchored
 > at `^`, regex above) decides. Header present + field not matchable = **malformed →
@@ -107,24 +128,33 @@ once before any post.
    the resolved ones in the rest of the steps:
    1. **Status** — `list_issue_statuses` with `team: "3c0058ed-759f-4678-b219-4d34d0f533d7"`
       (Team by ID = stable anchor). Map by **exact name** (case-sensitive):
-      `Todo`, `In Progress`, `To Review`, `Done`, `Canceled` → live IDs.
+      `Todo`, `In Progress`, `To Review`, `Done`, `Canceled` → live IDs. **Also** resolve
+      `Triage` (the entry gate) if present — but it is **OPTIONAL**: a human creates this column
+      and the Linear API can't, so its absence is **not** an abort (see fallback).
    2. **Labels** — `list_issue_labels` with the same `team`. Filter the `stage` group
       (`9e921002-79e5-4435-92af-b2f42025b724`) and map by name:
-      `stage:understand`, `stage:execution`, `stage:review`, `stage:blocked` → live IDs.
-      (`stage:sign-off` is **deprecated** — ignore it.)
+      `stage:triage`, `stage:understand`, `stage:execution`, `stage:review`, `stage:blocked`,
+      `stage:done` → live IDs. (`stage:done` is the green **terminal** label set when a ticket is
+      integrated and moved to `To Review` — see c2/e; it is **not** a derived stage. The old
+      `stage:sign-off` is **deprecated** — ignore it; `stage:done` is its green successor.)
    3. **Reconcile** each name with the hardcoded ID from CLAUDE.md. On **divergence**, the
       **live-resolved one wins**; note `(<name>: hardcoded <id> → live <id>)` for the
       report (step 4).
    4. **Fallback:**
-      - **Canonical status missing** (any of the 5 names does not appear) → **ABORT the sweep**
-        with a clear error (`Status coordinate '<name>' not resolved — board renamed?`).
-        Without a reliable status there is no way to move tickets safely.
+      - **Canonical status missing** (any of the 5 core names `Todo`/`In Progress`/`To Review`/
+        `Done`/`Canceled` does not appear) → **ABORT the sweep** with a clear error
+        (`Status coordinate '<name>' not resolved — board renamed?`). Without a reliable status
+        there is no way to move tickets safely.
+      - **`Triage` status missing** (not yet created by a human) → **do NOT abort**: the entry
+        pre-triage gate is **inert** this sweep (skip the `Triage` listing in step 1; the pull
+        in step 3 falls back to moving straight to `In Progress`). Note it in the report.
       - **`stage:*` label missing** → use the **hardcoded ID** of that label + emit a **warning**
         in the report (the pipeline continues; the label is just a self-healing mirror).
-   5. **Use the resolved IDs** in all the following steps: `list_issues` (status `In
-      Progress`), label reconciliation (2.b/2.e), move to `To Review` (c2), pull from
-      `Todo` and all status comparisons. Where the steps below say "see CLAUDE.md",
-      read "**use the ID resolved in step 0**" (CLAUDE.md as fallback).
+   5. **Use the resolved IDs** in all the following steps: `list_issues` (statuses `Triage` +
+      `In Progress`), label reconciliation (2.b/2.e), move to `To Review` (c2), pull from
+      `Todo` (→ `Triage`, or `In Progress` when `Triage` is absent) and all status comparisons.
+      Where the steps below say "see CLAUDE.md", read "**use the ID resolved in step 0**"
+      (CLAUDE.md as fallback).
 
 0.6. **Resolve artifact-prose language (`LANE_LANG`).** AFTER resolving coordinates and
    BEFORE step 1, resolve the human-readable PROSE language for this sweep. This affects
@@ -150,11 +180,11 @@ once before any post.
    prompt (step `d.0`) and reported in step 4.
    `en` is effectively a no-op (the repo is English by default).
 
-1. `list_issues` by **project ID** (`project: "9a2f315c-8def-4698-ba9a-8d0a680cda13"` — use the **ID**, not the name, which can change), `state: "In Progress"` (**ID resolved in step 0**). Empty → "nothing in the lane", stop.
+1. `list_issues` by **project ID** (`project: "9a2f315c-8def-4698-ba9a-8d0a680cda13"` — use the **ID**, not the name, which can change), for **both** `state: "In Progress"` **and** `state: "Triage"` (**IDs resolved in step 0**; if the `Triage` status is absent on the board — not yet created by a human — just skip it, the entry gate stays inert). Both empty → "nothing in the lane", continue to step 3 (the pull may still fire).
 
 2. For each ticket (independent ones can run in parallel):
    a. `list_comments` → compute the **derived stage**.
-      **Scan the comments newest → oldest and short-circuit:** stop as soon as rules 1–6
+      **Scan the comments newest → oldest and short-circuit:** stop as soon as rules 1–8
       decide the stage (the most recent matching artifact wins; older ones cannot change it).
       Keep only what the decision needs — each candidate artifact's **header**, its single
       **structured-field line** (the regex match) and its **`createdAt`** — and **do NOT keep
@@ -170,11 +200,29 @@ once before any post.
          do the merge `esteira/<TICKET-ID>` → `production` **now**. If it already is an ancestor, nothing.
        - **Conflict** without a safe resolution → mark `blocked` + a comment (becomes a human gate).
        - **Move the ticket to status `To Review`** (`save_issue state: "<id-To-Review>"` —
-         **ID resolved in step 0**, CLAUDE.md as fallback). It **leaves `In Progress`**:
+         **ID resolved in step 0**, CLAUDE.md as fallback) **and set the green terminal label
+         `stage:done`** in the same `save_issue` (`labels: ["<stage:done ID resolved in step 0>"]`
+         — mutually exclusive in the `stage` group, so it replaces the stale `stage:*`). If
+         `stage:done` could not be resolved (label not yet created on the board), skip the label
+         (warn in step 4) — the status move alone is enough. It **leaves `In Progress`**:
          it does not occupy the active slot nor is it swept again.
          It waits for you — the human gate only **accepts** (`To Review` → `Done`). A problem
          found after the merge is filed as a **new linked ticket** (regression/bugfix) that
          flows through the lane normally — the original ticket is terminal once merged.
+   c3. **A ticket whose STATUS is `Triage`** — `Triage` is a **pure signal column** (the human's
+       turn). Disambiguate by the derived stage:
+       - derived stage `understand` (a `## 🎯 Pre-Triage` is posted) → **PURE HOLD / skip**: the
+         lane runs **nothing**. It is waiting at the **human entry gate**. A human approves the
+         objective by moving it `Triage → In Progress` (next sweep it runs `understand`), or adds
+         a `## ⛔ Kick-back:` comment to bounce the objective (next sweep derives `triage` →
+         re-runs the triager in place). Reconcile the label to `stage:triage` and move on.
+       - derived stage `triage` (a **legacy** empty ticket from the old model — no Pre-Triage yet,
+         or a fresh kick-back) → **run the pre-triage station once** (the `triager` agent), per
+         step `d` with station = `triage`, and **leave it in `Triage`** (do NOT move it). Pre-triage
+         runs **once**; the only re-run is a fresh objective kick-back. Then it HOLDS as a signal.
+       (A ticket whose STATUS is `In Progress` but derives `triage` — e.g. a human moved it in
+       manually, bypassing the pre-triage phase — has no pre-triage inside `In Progress`: treat it
+       as `understand` and run that station in step `d`.)
    d. Otherwise, run the station's agent **once**. Before assembling the prompt and triggering
       the subagent, do the **Recall** (step `d.0`) and prefix the memory block to the prompt.
 
@@ -186,6 +234,9 @@ once before any post.
       1. **Query.** Derive `QUERY = "<title>\n\n<description truncated to ~1000 chars>"`.
       2. **Recall by stage** (each call prints ONLY a JSON array of chunks
          `{ticket_id, stage, kind, source, body, chunk_index, distance}`, asc by `distance`):
+         - **triage** → context from OTHER tickets/docs to frame the objective (without `--ticket`):
+           `node kb/recall.mjs "<QUERY>" --kind spec --k 5`
+           (you may complement with `node kb/recall.mjs "<QUERY>" --kind doc --k 5`).
          - **understand** → context from OTHER tickets/docs (without `--ticket`):
            `node kb/recall.mjs "<QUERY>" --kind spec --k 5`
            (you may complement with `node kb/recall.mjs "<QUERY>" --kind doc --k 5`).
@@ -209,10 +260,10 @@ once before any post.
       3b. **Prose-language directive (`LANE_LANG_RESOLVED` from step 0.6).** ALSO prepend
          to EACH station prompt a one-line directive telling the agent which language to
          write the human-readable prose in:
-         `> Write all human-readable PROSE in this artifact in: <LANE_LANG_RESOLVED>. Keep ALL protocol markers, headers (## 🧭 / ## 🔧 / ## 🔍) and the structured fields **Blockers:** / **Status:** (SUCCESS|FAILED) / **Verdict:** (APPROVED|REJECTED) verbatim in English.`
+         `> Write all human-readable PROSE in this artifact in: <LANE_LANG_RESOLVED>. Keep ALL protocol markers, headers (## 🎯 / ## 🧭 / ## 🔧 / ## 🔍) and the structured fields **Blockers:** / **Status:** (SUCCESS|FAILED) / **Verdict:** (APPROVED|REJECTED) verbatim in English.`
          When `LANE_LANG_RESOLVED = en` this is effectively a no-op (the agents default to
          English); for `pt-BR` the prose is Portuguese while markers/fields stay English so
-         derivation (rules 1-6) keeps matching.
+         derivation (rules 1-8) keeps matching.
       4. **Best-effort fallback.** If `kb.db` **does not exist**, the array comes back **empty** (`[]`),
          the JSON is invalid, or recall exits with **exit≠0** → **OMIT** the block and trigger the
          agent normally. Recall **never** blocks nor regresses the ticket.
@@ -220,14 +271,18 @@ once before any post.
          When **offline/without a model**, fall back to `--fake` (or export
          `KB_FAKE_EMBEDDINGS=1`). Any provider failure falls into the fallback (step 4).
       6. **Tag convention** (aligned with the Ingest of step `d.1`, which does the write):
-         `kind ∈ {doc, spec, worklog, review}`, plus `stage` and `source`.
+         `kind ∈ {doc, triage, spec, worklog, review}`, plus `stage` and `source`.
 
-      After the Recall, run the agent (subagent_type `context-builder` / `executor` /
+      After the Recall, run the agent (subagent_type `triager` / `context-builder` / `executor` /
       `reviewer`; if it does not exist in this session, use `general-purpose` with the role of
       `.claude/agents/<name>.md`). **Before** the `save_comment` of each artifact, do the
       **Format validation (step `d.0.6`)**; only post what passes. For EACH artifact
       posted, immediately follow with the **Ingest** (step `d.1`), using the id of the comment
       just created as `--source`:
+      - **triage** → `triager`. **Validate (d.0.6)** the `## 🎯 Pre-Triage`; if it passes, post
+        (`save_comment`), set the `Triage` status' label `stage:triage` and then **Ingest**
+        (`d.1`) with `--stage triage --kind triage`. The ticket then **HOLDS** at the human
+        entry gate (status stays `Triage`).
       - **understand** → `context-builder`. **Validate (d.0.6)** the `## 🧭 Context Spec`;
         if it passes, post (`save_comment`) and then **Ingest** (`d.1`) with
         `--stage understand --kind spec`.
@@ -243,7 +298,9 @@ once before any post.
       **d.0.6 — Format validation (pre-post).** BEFORE each `save_comment` (and the
       Ingest `d.1`), validate that the artifact returned by the agent matches the station's
       template. An artifact outside the template **is not posted nor ingested** — that way
-      derivation (rules 1-6) never sees a malformed field. Checks per station:
+      derivation (rules 1-8) never sees a malformed field. Checks per station:
+      - **triage** (`triager`): header `## 🎯 Pre-Triage` present (NO enum field — the gate is
+        the `Triage` status validated by a human, not a structured value).
       - **understand** (`context-builder`): header `## 🧭 Context Spec` present **and**
         line `^\*\*Blockers:\*\*` present (empty = no blockers).
       - **execution** (`executor`): header `## 🔧 Work Log` present **and** a line matching
@@ -268,8 +325,8 @@ once before any post.
          returns **success**. Use the **comment id** returned as `--source`. If
          `save_comment` fails, **do not** ingest (without an artifact in Linear there is nothing to mirror).
       2. **Exact command** (artifact text via STDIN; the ingest prints `{chunks, ids}` JSON):
-         `<artifact-content> | node kb/ingest.mjs --ticket <TICKET-ID> --stage <understand|execution|review> --kind <spec|worklog|review> --source <comment-id> [--fake]`
-      3. **Stage→kind mapping:** `understand → spec`, `execution → worklog`,
+         `<artifact-content> | node kb/ingest.mjs --ticket <TICKET-ID> --stage <triage|understand|execution|review> --kind <triage|spec|worklog|review> --source <comment-id> [--fake]`
+      3. **Stage→kind mapping:** `triage → triage`, `understand → spec`, `execution → worklog`,
          `review → review` (the same `kind`s that Recall queries in `d.0`).
       4. **`--db`: simply OMIT it** (Recall and Ingest). The default of both is
          `kb.db` **anchored at the repo root** (resolved by the script itself, independent of
@@ -302,37 +359,64 @@ once before any post.
    e. **Recompute** the derived stage (now with the new artifact) and reconcile the output.
       This recompute only needs the **already-validated structured field** from `d.0.6` (not
       the full body discarded in `d.1.8`):
+      - If you just posted a `## 🎯 Pre-Triage` (recomputed stage `understand`) → the objective
+        is settled; set the label `stage:triage` and **move the ticket to `Triage`** to HOLD at
+        the human entry gate (DO NOT advance to `understand`):
+        - pre-triaged a **`Todo`** (the common case, `from:'Todo'`) → **move `Todo → Triage`** via
+          `save_issue` (status `Triage` by **ID resolved in step 0**). If the `Triage` status does
+          **not** exist on the board, fall back to moving straight to `In Progress` (the gate is inert).
+        - pre-triaged a **legacy `Triage`** ticket (`from:'Triage'`) → **keep the status `Triage`**.
+        Either way the `understand` station only runs once a human moves the ticket
+        `Triage → In Progress`.
       - If the recomputed stage is `sign-off` (you just posted an APPROVED Review)
         → **execute the procedure of step c2 inline, in this SAME
         sweep**: idempotent merge of `esteira/<TICKET-ID>` → `production` (only if not yet
         an ancestor; conflict without a safe resolution → `blocked` + a comment) and move the
         ticket to status `To Review` (`save_issue state: "<id-To-Review>"`, ID resolved
-        in step 0). **DO NOT write a label** — `stage:sign-off` is deprecated and there is no valid
-        label ID for it; the ticket leaves `In Progress` already integrated, awaiting your
-        human gate. (The `c2` at the top of step 2 keeps covering, as self-healing, tickets
-        approved in previous sweeps.)
+        in step 0) **and set the green terminal label `stage:done`** in the same `save_issue`
+        (`labels: ["<stage:done ID resolved in step 0>"]` — mutually exclusive in the `stage`
+        group, so it replaces the stale `stage:*`). If `stage:done` could not be resolved (label
+        not yet created on the board), skip the label (warn in step 4) — the status move alone is
+        enough. (The deprecated `stage:sign-off` is **not** used — `stage:done` is its green
+        successor.) The ticket leaves `In Progress` already integrated, awaiting your human gate.
+        (The `c2` at the top of step 2 keeps covering, as self-healing, tickets approved in
+        previous sweeps.)
       - Otherwise, **write the label** corresponding to the stage by ID (resolved in
         step 0; CLAUDE.md as fallback). Check in the `save_issue` return that
         `labels` contains the expected one.
 
-3. **Auto-sequence (keeps the lane busy).** The lane is **pull-based with WIP=1**: at
-   most **one** *active* ticket at a time (active = derived stage in `understand`,
-   `execution` or `review`, status `In Progress`). Tickets in `To Review`/`Done` (already left
-   `In Progress`) or `blocked` (stopped at a human) **do not** count as active. After
-   step 2, evaluate the slot:
-   - **Trigger:** **no** active ticket **AND** there is at least one eligible `Todo`.
-     It does not matter how many tickets are in `To Review`/`blocked` waiting for you — they do not
-     occupy the slot. The lane **self-starts**: there is no human entry gate. Only do NOT pull
-     if there is already an active ticket, or if no `Todo` is eligible.
-   - When the trigger fires, pull **one** `Todo` and move it to `In Progress` via `save_issue`
-     (status by **ID resolved in step 0**, CLAUDE.md as fallback; without touching the stage
-     label — it enters without an artifact = `understand`).
-   - **Which `Todo`** — consider only the **eligible** ones: all their `blockedBy` already **integrated**,
-     i.e. in `To Review` **or** `Done` (**do not** wait for the human `Done` — entering `To Review`
-     already merged into `production` in step c2). Query the candidate `Todo`s scoped to the
-     **project ID** and `state: "Todo"`, reading only the **minimal fields** needed to order
-     them (identifier/number, `priority`, `parent`, `blockedBy` status) — do not pull comment
-     bodies or descriptions here. Among the eligible ones, order by:
+3. **Pre-triage phase (keeps the lane busy).** The lane is **pull-based**. **WIP=1 applies ONLY
+   to the active slot** (step 2): at most **one** *active* ticket (derived stage `understand`,
+   `execution` or `review`, status `In Progress`). The **pre-triage phase is INDEPENDENT of WIP=1
+   and is NOT gated by the `Triage` column**: it pre-triages eligible `Todo`s **in place** up to a
+   cap of **3 per sweep** (`PRETRIAGE_CAP` — stateless, derived **purely from board state**: NO
+   time-window, NO persisted timestamp). So a single sweep may have **1 active ticket AND
+   pre-triage up to 3** `Todo`s, no matter how many tickets sit in `Triage`. Tickets in
+   `To Review`/`Done` or `blocked` do not count as active; `Triage` tickets holding their
+   Pre-Triage are a **pure signal** (the human's turn) and **do not** block this phase.
+
+   The lane **self-starts**: it does not wait for a human to START a ticket (the human only
+   **approves the objective** once the ticket is parked in `Triage`). After step 2, take the
+   **eligible** `Todo`s, order them (criteria below), and act on the top ones — **capped at 3
+   actions total** this sweep (legacy in-place triages of step `c3` count toward the same cap):
+   - A `Todo` that **already** has a `## 🎯 Pre-Triage` (derives `understand`) → **reconcile**:
+     **move `Todo → Triage`** via `save_issue` (status by **ID resolved in step 0**) — it was
+     pre-triaged but not moved yet. **Do NOT re-triage** (idempotency by artifact); this does not
+     consume a triager run but does count as one of the ≤3 reconcile/triage actions.
+   - A `Todo` **without** a Pre-Triage (derives `triage`) → **run the triager once IN PLACE** (in
+     `Todo`, per step `d`, station = `triage`), then **move `Todo → Triage`** (step `e`). The
+     ticket then HOLDS at the human entry gate.
+   - **If the `Triage` status does not exist** on the board (a human has not created the column
+     yet) → the entry gate is **inert**: instead of moving to `Triage`, move straight to
+     `In Progress` (it carries its Pre-Triage and, in `In Progress`, is treated as `understand`).
+   - **Which `Todo`s** — consider only the **eligible** ones: all their `blockedBy` already
+     **integrated**, i.e. in `To Review` **or** `Done` (**do not** wait for the human `Done` —
+     entering `To Review` already merged into `production` in step c2). Query the candidate `Todo`s
+     scoped to the **project ID** and `state: "Todo"`, reading only the **minimal fields** needed
+     to order them (identifier/number, `priority`, `parent`, `blockedBy` status). To bound cost,
+     only `list_comments` for the top candidates (the ones you may act on this sweep) to learn
+     whether each already has a Pre-Triage — do not pull comment bodies for every `Todo`. Among
+     the eligible ones, order by:
      1. **Epic continuity (reconstructed from Linear, NOT session memory).** Determine the
         **epic-continuity anchor** by querying the project's tickets in `To Review`/`Done`
         and taking the one with the **greatest `updatedAt`** (the most recently integrated
@@ -343,9 +427,9 @@ once before any post.
         anchor → skip this criterion.)
      2. **Priority:** Urgent > High > Medium > Low > None.
      3. **Lowest ticket number** (tie-break).
-   - If no `Todo` is eligible (all blocked by a still **active** dependency or
-     `blocked`), **do not** pull and say so in the report — the lane stays idle until a
-     `blockedBy` reaches `To Review` (integrated) or a `blocked` is resolved.
+   - If no `Todo` is eligible (all blocked by a still **active** dependency or `blocked`), **do
+     not** pull and say so in the report — the lane stays idle until a `blockedBy` reaches
+     `To Review` (integrated) or a `blocked` is resolved.
 
 4. Report: start with the line **"Resolved coordinates"** (step 0) — list the
    divergences hardcoded × live and the missing-label warnings, or "no divergences";
@@ -381,9 +465,27 @@ once before any post.
 - **Idempotency:** running the same sweep 2x must not redo work. Since the
   stage comes from the artifacts, a ticket with a Work Log never runs the executor again.
 - **Attempts** = number of `## 🔍 Review` REJECTED comments (do not use a separate marker).
-- **WIP=1 is invariant:** at most **one** *active* ticket (`understand`/`execution`/`review`,
-  status `In Progress`) at any time. Tickets in `To Review`/`Done`/`blocked` do not count.
-  Never trigger two stations at the same time.
+- **WIP=1 is invariant (active slot only):** at most **one** *active* ticket
+  (`understand`/`execution`/`review`, status `In Progress`) at any time. Tickets in
+  `To Review`/`Done`/`blocked` do not count. Never trigger two **In-Progress** stations at the
+  same time. WIP=1 does **not** constrain the pre-triage phase — see the next rule.
+- **Pre-triage is parallel + independent of WIP=1.** The pre-triage phase runs the triager on up
+  to **3 eligible `Todo`s per sweep** (`PRETRIAGE_CAP`), **in place** (while still in `Todo`),
+  regardless of how many tickets sit in `Triage` and regardless of the active slot. The cap is
+  derived **purely from board state** (stateless — no time-window / no persisted timestamp).
+- **`Triage` is a pure signal column (not a one-item gate).** A ticket enters `Triage` **only
+  after** its `## 🎯 Pre-Triage` is posted; once there it is a **pure HOLD** (the human's turn)
+  and the lane runs **nothing** on it. `Triage` does **not** block the conveyor: the lane keeps
+  pre-triaging `Todo`s up to the cap behind any number of `Triage` holds.
+- **Two human gates (symmetric).** Entry: the `Triage` gate (a human approves the ticket's
+  **objective** by moving `Triage → In Progress`, or bounces it with `## ⛔ Kick-back:`). Exit:
+  `To Review → Done` (a human approves the **result**). The lane runs everything in between on
+  its own. The entry gate is a **signal column**, independent of the WIP=1 active slot.
+- **Pre-triage runs once.** The triager runs a single time per ticket; the **only** re-run is a
+  human objective kick-back (`## ⛔ Kick-back:` newer than the last `## 🎯 Pre-Triage`).
+  A `Todo` that **already** carries a Pre-Triage is **not** re-triaged — it is just **moved
+  `Todo → Triage`** (idempotency by artifact). Downstream execution/review kick-backs never
+  return to pre-triage (forward-only preserved).
 - **One driver at a time:** the sweep acquires `.claude/esteira.lock.d` (atomic mkdir, TTL 30min)
   at the start and releases it at the end; a 2nd concurrent driver aborts silently.
 - **Automatic integration + `To Review`:** when the review approves, the driver merges
@@ -397,13 +499,18 @@ once before any post.
   becomes a **NEW linked ticket** (regression/bugfix) that flows through the lane normally. An
   emergency revert of a bad merge is a rare, **manual, human action** — the lane does not
   automate it.
-- **Pulling from `Todo`** is only allowed by the auto-sequence (step 3): when there is no active
-  ticket and there is an eligible `Todo`. The lane self-starts — it does **not** wait for a human entry
-  gate. The exit (`→ Done`) remains a human gate.
+- **Pre-triaging `Todo`s** is the auto-sequence (step 3): the lane runs the triager on up to 3
+  eligible `Todo`s per sweep **in place** (it does **not** wait for a human to START a ticket nor
+  for the active slot to be free), then moves each `Todo → Triage` to await the human **objective**
+  approval. A `Todo` that already carries a Pre-Triage is just moved (not re-triaged). The exit
+  (`→ Done`) remains a human gate.
 - **Coordinates by name:** the status/label IDs are **resolved by name each sweep**
   (step 0); the CLAUDE.md table is just cache/fallback. The canonical column names
-  (`Todo`/`In Progress`/`To Review`/`Done`/`Canceled`) and labels (`stage:understand/execution/review/blocked`)
-  are a contract — do not rename them.
+  (`Todo`/`Triage`/`In Progress`/`To Review`/`Done`/`Canceled`) and labels
+  (`stage:triage/understand/execution/review/blocked`) are a contract — do not rename them.
+  `Triage` is **human-created** (the Linear API can't create a workflow status); until it exists
+  the signal column is inert — the lane still pre-triages in place but moves straight to
+  `In Progress` instead of `Triage`.
 - The label is mutually exclusive within the `stage` group: passing `["<ID>"]` (ID resolved in step 0)
   replaces the previous one.
 - If the derived stage and the label diverge, **the artifact wins** — fix the label, not the artifact.
@@ -432,6 +539,6 @@ already stateless-per-sweep. All durable state is reconstructed every sweep from
 stores: **Linear** (coordinates by name in step 0, the derived stage from artifacts in step 2a,
 the epic-continuity anchor as max-`updatedAt` `To Review`/`Done` ticket in step 3) and **git +
 disk** (`production`/`esteira/<TICKET-ID>` for the merge, the
-`.claude/esteira.lock.d` lock). Derivation rules 1–6, the Verdict/Status/Blockers regexes, the
+`.claude/esteira.lock.d` lock). Derivation rules 1–8, the Verdict/Status/Blockers regexes, the
 lock/TTL and the recall/ingest best-effort behavior are all
 unchanged — only the **retention** of already-consumed text changes.

@@ -11,14 +11,28 @@ agents context and memory. No service of your own to deploy.
 
 - **Board**: project **Auto Lane** in Linear (team `Lane`/`DIM`). Identify it **by ID** —
   names may change (see IDs below).
-- **Columns (status)**: `Todo` → `In Progress` → `To Review` → `Done` (+ `Backlog`, `Canceled`).
-- **Stations**: inside `In Progress`, a label from the `stage` group tells the sub-station (understand/execution/review/blocked).
+- **Columns (status)**: `Todo` → `Triage` → `In Progress` → `To Review` → `Done` (+ `Backlog`, `Canceled`).
+- **Stations**: inside `In Progress`, a label from the `stage` group tells the sub-station (understand/execution/review/blocked). The entry gate `Triage` carries `stage:triage`.
 - **Driver**: the `/lane` skill does ONE sweep. `/loop /lane` runs in a loop (heartbeat).
-- **Human gate**: only the **exit** (`To Review` → `Done`). Entry is automatic.
-- **Auto-sequence (pull):** the lane is WIP=1 and **keeps itself busy**. Whenever there is no
-  active ticket and an eligible `Todo` exists (all its `blockedBy` already **integrated** = in
-  `To Review` or `Done`), it pulls the next one on its own — **without** waiting for a human entry gate.
-  Tickets in `To Review`/`blocked` wait for a human but don't occupy the slot. Details in the `/lane` skill.
+- **Two human gates (symmetric):** the **entry** gate `Triage` (a human validates the ticket's
+  **objective** before the lane invests in a full plan) and the **exit** gate `To Review → Done`
+  (a human validates the finished work). The lane does everything in between on its own.
+- **Pre-triage (entry):** the `triager` agent distills a `Todo`'s objective once into a
+  `## 🎯 Pre-Triage` artifact **while the ticket is still in `Todo`**; the lane then moves it
+  `Todo → Triage`, where it **holds** as a pure signal (the human's turn). Up to **3 Todos are
+  pre-triaged per sweep** (`PRETRIAGE_CAP`, independent of WIP=1). A human either **approves the
+  objective** by moving it `Triage → In Progress` (the lane then runs `understand`), or adds a
+  `## ⛔ Kick-back:` comment to **bounce the objective** — the only re-run. Pre-triage runs
+  **once** per ticket; a `Todo` that already carries a Pre-Triage is just **moved** (not
+  re-triaged — idempotency by artifact); execution/review kick-backs never return to it
+  (forward-only is preserved downstream).
+- **Auto-sequence (pre-triage):** the lane **keeps itself busy**. WIP=1 applies **only to the
+  active slot**; the pre-triage phase runs **in parallel and is not gated by `Triage`**. Whenever
+  there are eligible `Todo`s (all their `blockedBy` already **integrated** = in `To Review` or
+  `Done`), the lane pre-triages up to **3 per sweep** in place and moves each into `Triage` — it
+  does **not** wait for a human to START a ticket, nor for the active slot to free up, nor do
+  `Triage` holds block it. Tickets in `To Review`/`blocked`/`Triage` wait for a human but don't
+  occupy the active slot. Details in the `/lane` skill.
 - **One driver at a time:** each sweep acquires a mutual-exclusion lock
   (`.claude/esteira.lock.d/`, atomic `mkdir`, TTL 30min) before touching Linear and
   releases it at the end. Two simultaneous `/lane` runs don't break WIP=1 — the 2nd aborts silently.
@@ -43,11 +57,24 @@ Review REJECTED (<3)   → execution  | (>=3) → blocked
 Work Log SUCCESS       → review
 Work Log FAILED        → blocked
 Context Spec (no block)→ execution  | (with blockers) → blocked
-no artifact            → understand (entry)
+Kick-back (⛔, newer than Pre-Triage) → triage (objective re-run)
+Pre-Triage (🎯, present)→ understand (objective settled; moved to Triage to await the gate)
+no artifact            → triage (entry)
 ```
 
-Flow: `Todo ─(auto)─► In Progress` → understand → execution → review →
-(APPROVED, auto: merge + status) `To Review` ─(human)─► `Done`. Entry is automatic; human gate only on exit.
+Flow: `Todo` (pre-triage **in place**; ⛔ kick-back re-runs it) ─(auto)─► `Triage` (pure signal
+HOLD) ─(human: approve objective)─► `In Progress` → understand → execution → review →
+(APPROVED, auto: merge + status) `To Review` ─(human)─► `Done`. The lane self-starts the
+pre-triage and runs everything between the gates; humans only validate the **objective** (entry)
+and the **result** (exit).
+
+> **`triage` semantics, disambiguated by status (same pattern as `sign-off`+status):**
+> a ticket in `Todo` deriving `triage` gets the **triager run in place** (then moves to `Triage`);
+> a ticket in `Todo` deriving `understand` (a Pre-Triage is already posted) is just **moved to
+> `Triage`** (reconcile, not re-triaged — idempotency by artifact); a ticket in `Triage` deriving
+> `understand` is a **pure HOLD** (the lane runs nothing — the human's turn); a **legacy** ticket
+> in `Triage` deriving `triage` (old model) is **triaged in place** and left there; a ticket in
+> `In Progress` deriving `understand` runs the `understand` station.
 
 Attempts = number of `## 🔍 Review` REJECTED comments. Limit: 3 → `blocked`.
 **Branch base for review/merge: `production`.** The executor commits on `esteira/<TICKET-ID>`.
@@ -58,7 +85,7 @@ the local `production` — the default `"fresh"` would lose the already-merged t
 
 | Event | Lane action |
 |---|---|
-| Review APPROVED | **auto, in the same sweep:** merge `esteira/<TICKET-ID>` → `production` (idempotent) **and move the ticket to `To Review`**. The queue does **not** wait for you. |
+| Review APPROVED | **auto, in the same sweep:** merge `esteira/<TICKET-ID>` → `production` (idempotent), **move the ticket to `To Review`** and **set the green terminal label `stage:done`** (mutually exclusive in the `stage` group — replaces the stale `stage:*`). The queue does **not** wait for you. |
 | you move `To Review` → `Done` | just closes the ticket (the merge already happened) |
 | problem found after merge | **forward-only:** a merged ticket is terminal — the lane never reopens nor reverts it. File a **NEW linked ticket** (regression/bugfix) that flows through the lane normally. An emergency revert of a bad merge is a rare, **manual, human action** — not automated by the lane. |
 
@@ -69,9 +96,15 @@ when there is no eligible `Todo`. Invariant: **a single active task at a time**.
 ## Handoffs (artifacts as comments on the ticket)
 
 Each station records its result as a comment on the ticket, with a standard header:
+- `## 🎯 Pre-Triage` — objective (what & why), brief overview, tradeoffs/open questions (each
+  with an explicit assumed default). **No parsed enum field** — the gate is the `Triage`
+  status validated by a human.
 - `## 🧭 Context Spec` — scope, affected files, approach, acceptance criteria, test plan.
 - `## 🔧 Work Log` — what the executor did, branch/diff, tests run.
 - `## 🔍 Review` — verdict (APPROVED/REJECTED) + justification against the criteria.
+
+A human can also add a `## ⛔ Kick-back:` comment on a ticket parked in `Triage` to bounce its
+objective: a kick-back newer than the last `## 🎯 Pre-Triage` re-runs the triager once.
 
 ## Knowledge base (`kb/`) — the agents' memory
 
@@ -96,11 +129,14 @@ resolved by NAME on every sweep** (step 0 of the `/lane` skill, via `list_issue_
 reordered/recreated the IDs change, and the driver switches to using the live IDs (reporting the
 divergence) without breaking the sweep.
 
-> **Canonical names = contract (do not rename).** The columns `Todo` / `In Progress` /
-> `To Review` / `Done` / `Canceled` and the labels `stage:understand` / `stage:execution` /
-> `stage:review` / `stage:blocked` are resolved by these exact names on every sweep.
-> Renaming any of them breaks resolution: a missing canonical status **aborts the sweep**;
-> a missing `stage:*` label falls back to the hardcoded ID below + warning.
+> **Canonical names = contract (do not rename).** The columns `Todo` / `Triage` / `In Progress` /
+> `To Review` / `Done` / `Canceled` and the labels `stage:triage` / `stage:understand` /
+> `stage:execution` / `stage:review` / `stage:blocked` / `stage:done` are resolved by these exact
+> names on every sweep. (`stage:done` is the green **terminal** label set on integration — not a
+> derived stage.) Renaming any of them breaks resolution: a missing canonical status **aborts the
+> sweep**; a missing `stage:*` label falls back to the hardcoded ID below + warning.
+> **`Triage` is a human-created column** (the Linear API can't create a workflow status) — until
+> it exists the entry pre-triage gate is inert (the driver simply finds nothing in `Triage`).
 
 - Team (current: "Lane", key DIM): `3c0058ed-759f-4678-b219-4d34d0f533d7`
 - Project (current: "Auto Lane"): `9a2f315c-8def-4698-ba9a-8d0a680cda13`
@@ -108,17 +144,27 @@ divergence) without breaking the sweep.
 
 Status — **cache/fallback (resolved by name on every sweep)** (⚠️ "To Review" reused the ID of the old "Done"; "Done" is now a new ID):
 - Todo: `c7b52570-af37-4d8e-abd3-95d927cae20c`
+- **Triage: `TODO-fill-after-human-creates-the-column`** (entry pre-triage gate; a human must
+  create this workflow status in Linear between `Todo` and `In Progress` — the Linear API does
+  **not** expose workflow-status creation. Until then it resolves by name on the sweep and, if
+  absent, the gate stays inert. Do **not** invent a fake ID here.)
 - In Progress: `e26d59a8-f02e-4959-ae24-ee57e81f4534`
 - **To Review: `8f89ea97-e4c4-4625-a29a-56aab536363f`** (was the ID of the old "Done")
 - **Done (new): `be50bf53-88ac-4021-8bdf-774695cff007`**
 - Canceled: `74f37c47-98d8-47a8-a7e7-f7936f4bc207`
 
-Labels — **cache/fallback (resolved by name on every sweep)** (`stage` group = `9e921002-79e5-4435-92af-b2f42025b724`) — sub-stations of `In Progress`:
+Labels — **cache/fallback (resolved by name on every sweep)** (`stage` group = `9e921002-79e5-4435-92af-b2f42025b724`) — sub-stations of `In Progress` (+ the `Triage` entry gate):
+- stage:triage: `TODO-fill-after-human-creates-the-label` (entry pre-triage; create under the `stage` group — falls back by name, warns if absent)
 - stage:understand: `c1e0dfb5-423f-49c5-915b-686c025b1dd7`
 - stage:execution: `58c3331f-3539-4e5b-b13f-16a9601aea0b`
 - stage:review: `e948cf81-3414-4c55-a62d-c7c9192e5db7`
 - stage:blocked: `649682c6-fec8-400b-8760-5453ea25eaae`
-- *(stage:sign-off `b862a7e9-0150-4159-8998-3d70eff5555b` — **deprecated**: replaced by the `To Review` status.)*
+- **stage:done: `00b16b79-fdd4-44c0-8fed-c89a83de8e01`** (color `#4cb782`, the green of the
+  old `stage:sign-off`) — green **terminal** label set when a ticket is integrated and moved to
+  `To Review` (steps c2/e). Create it under the `stage` group; resolves by name each sweep and, if
+  absent, the merge+`To Review` move still happens — only the label is skipped (warning).
+- *(stage:sign-off `b862a7e9-0150-4159-8998-3d70eff5555b` — **deprecated**: replaced by the
+  `To Review` status; its green is inherited by the terminal `stage:done` above.)*
 
 ## How to run
 
@@ -162,16 +208,21 @@ session), the repo ships an **opt-in** deterministic driver as a standalone Node
 in `lane/` — **no MCP at runtime**. It encodes the same state machine in pure, unit-tested
 modules and talks to Linear over the GraphQL API:
 
-- `lane/derive.mjs` — PURE port of derivation rules 1–6 + the canonical Verdict/Status/Blockers
-  regexes (forward-only: no kick-back). `lane/validate.mjs` — the d.0.6 pre-post format gate.
-  `lane/decide.mjs` — WIP=1 + auto-sequence ordering (epic-continuity → priority → number).
+- `lane/derive.mjs` — PURE port of the derivation rules + the canonical Verdict/Status/Blockers
+  regexes (forward-only downstream; recognizes `## 🎯 Pre-Triage` and the `## ⛔ Kick-back:`
+  objective re-run). `lane/validate.mjs` — the d.0.6 pre-post format gate (incl. the header-only
+  `triage` validator). `lane/decide.mjs` — returns a **composite plan**
+  `{ active, pretriage:[…], reconcile:[…] }`: the WIP=1 active In-Progress action **plus** up to
+  `PRETRIAGE_CAP` (=3) in-place pre-triages **plus** any pending `move-to-triage` reconciles
+  (a `Todo` that already has a Pre-Triage). `Triage` is a **pure signal** (no action). Ordering:
+  epic-continuity → priority → number.
 - `lane/linear.mjs` — thin GraphQL client (global `fetch`, `LINEAR_API_KEY` from env).
   `lane/merge.mjs` — idempotent `esteira/<ID>` → `production` merge (is-ancestor guard;
   conflict → blocked signal, never auto-resolved). `lane/board.mjs` / `lane/post.mjs` — glue.
 - `lane/run.mjs --dry-run` — derives the next action from a board fixture and prints it with
   **zero side effects** (offline; no Linear/git writes). `scripts/lane-tick.sh` — `flock -n`
   single-instance runner that invokes the sweep and dispatches the station workers in
-  `.claude/commands/` (`/understand`, `/execute`, `/review`) via `claude -p`.
+  `.claude/commands/` (`/triage`, `/understand`, `/execute`, `/review`) via `claude -p`.
 - Tests: `cd lane && node --test` (pure-logic coverage, fully offline, no extra deps).
 - Config: set `LINEAR_API_KEY` in `.env` (see `.env.example`). The code driver is **not** the
   default — the prose `/loop /lane` over the MCP remains the supported path; the live station

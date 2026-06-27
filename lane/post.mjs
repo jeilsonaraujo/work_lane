@@ -13,7 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INGEST = path.resolve(__dirname, '..', 'kb', 'ingest.mjs');
 
 // stage(station) → kind, mirroring SKILL d.1.3.
-const KIND = { understand: 'spec', execution: 'worklog', review: 'review' };
+const KIND = { triage: 'triage', understand: 'spec', execution: 'worklog', review: 'review' };
 
 // Best-effort KB ingest (never throws into the caller). Mirrors SKILL d.1.
 export function defaultIngest({ body, ticketId, station, source, fake = Boolean(process.env.KB_FAKE_EMBEDDINGS) }) {

@@ -1,8 +1,19 @@
-// Unit tests for the PURE stage derivation (rules 1–6 + malformed + cap-3).
+// Unit tests for the PURE stage derivation (entry pre-triage + rules 1–5 +
+// objective kick-back + malformed + cap-3).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { derive } from './derive.mjs';
 
+const pretriage = (createdAt = '2026-01-01T00:00:00Z') => ({
+  header: '## 🎯 Pre-Triage',
+  body: `## 🎯 Pre-Triage\n\n**Objective:** ship x\n**Overview:** y`,
+  createdAt,
+});
+const kickback = (createdAt) => ({
+  header: '## ⛔ Kick-back: wrong objective',
+  body: `## ⛔ Kick-back: wrong objective\n\nplease re-scope`,
+  createdAt,
+});
 const spec = (blockers = '', createdAt = '2026-01-01T00:00:00Z') => ({
   header: '## 🧭 Context Spec',
   body: `## 🧭 Context Spec\n\n**Scope:** x\n**Blockers:** ${blockers}`,
@@ -19,9 +30,34 @@ const review = (verdict, createdAt) => ({
   createdAt,
 });
 
-test('rule 6: no artifact → understand', () => {
-  assert.deepEqual(derive([]), { stage: 'understand' });
-  assert.deepEqual(derive(undefined), { stage: 'understand' });
+test('entry: no artifact → triage (pre-triage gate)', () => {
+  assert.deepEqual(derive([]), { stage: 'triage' });
+  assert.deepEqual(derive(undefined), { stage: 'triage' });
+});
+
+test('pre-triage only (no Context Spec yet) → understand', () => {
+  assert.equal(derive([pretriage()]).stage, 'understand');
+});
+
+test('pre-triage + Context Spec (no blockers) → execution', () => {
+  const arts = [pretriage('2026-01-01T00:00:00Z'), spec('', '2026-01-02T00:00:00Z')];
+  assert.equal(derive(arts).stage, 'execution');
+});
+
+test('objective kick-back newer than Pre-Triage → triage (re-run)', () => {
+  const arts = [pretriage('2026-01-01T00:00:00Z'), kickback('2026-01-03T00:00:00Z')];
+  const r = derive(arts);
+  assert.equal(r.stage, 'triage');
+  assert.match(r.reason, /kick-back/i);
+});
+
+test('re-run pre-triage: new Pre-Triage after a kick-back → understand again', () => {
+  const arts = [
+    pretriage('2026-01-01T00:00:00Z'),
+    kickback('2026-01-02T00:00:00Z'),
+    pretriage('2026-01-03T00:00:00Z'),
+  ];
+  assert.equal(derive(arts).stage, 'understand');
 });
 
 test('rule 5: Context Spec with empty Blockers → execution', () => {
@@ -108,7 +144,7 @@ test('malformed: Context Spec header but no Blockers line → blocked', () => {
   assert.equal(derive([bad]).stage, 'blocked');
 });
 
-test('non-station comments are ignored (treated as no artifact)', () => {
+test('non-station comments are ignored (treated as no artifact → triage)', () => {
   const chatter = { header: 'just a comment', body: 'hello there', createdAt: '2026-01-01T00:00:00Z' };
-  assert.equal(derive([chatter]).stage, 'understand');
+  assert.equal(derive([chatter]).stage, 'triage');
 });

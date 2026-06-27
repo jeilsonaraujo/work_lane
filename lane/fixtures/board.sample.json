@@ -6,8 +6,22 @@
     ]
   },
   "todos": [
-    { "id": "iss-52", "identifier": "WLN-52", "number": 52, "priority": 2, "parent": "epic-14", "blockedBy": [{ "state": "To Review" }] },
-    { "id": "iss-60", "identifier": "WLN-60", "number": 60, "priority": 1, "parent": "epic-99", "blockedBy": [] }
+    {
+      "id": "iss-60", "identifier": "WLN-60", "number": 60, "priority": 1, "parent": "epic-99", "blockedBy": [],
+      "artifacts": []
+    },
+    {
+      "id": "iss-61", "identifier": "WLN-61", "number": 61, "priority": 2, "parent": "epic-14", "blockedBy": [{ "state": "Done" }],
+      "artifacts": [
+        { "header": "## 🎯 Pre-Triage", "body": "## 🎯 Pre-Triage\n\n**Objective:** distilled goal", "createdAt": "2026-06-26T09:30:00Z" }
+      ]
+    }
+  ],
+  "triage": [
+    {
+      "ticket": { "id": "iss-62", "identifier": "WLN-62", "number": 62, "title": "legacy empty triage", "priority": 2, "parent": "epic-14" },
+      "artifacts": []
+    }
   ],
   "integrated": [
     { "id": "iss-50", "parent": "epic-14", "updatedAt": "2026-06-26T08:00:00Z" }
