@@ -39,20 +39,14 @@ once before any post.
 
 ### How to derive the stage (looking at `list_comments`, from most recent to oldest)
 
-0. **Kick-back (invalidates old artifacts).** Find the most recent `## ⛔ Kick-back: <reason>`
-   (highest `createdAt`) → call its `createdAt` **`KB_TS`**. This comment is a
-   **human signal** (not a station artifact). If it exists, **EVERY artifact with `createdAt
-   < KB_TS` is invalidated** — it does not count in derivation. Rules 1-6 below now look at
-   **only** artifacts with `createdAt > KB_TS`. Without a kick-back, `KB_TS = -∞` and nothing changes
-   (behavior identical to before — rules 1-6 intact). Effects:
-   - **Anti-loop:** let `N` = number of `## ⛔ Kick-back:` comments on the ticket. If `N >=
-     KICKBACK_CAP` (default **2**, configurable) → `blocked` (do not reopen; becomes a human gate).
-     This cap is **independent** of the 3-REJECTED-reviews limit (rule 2).
-   - Otherwise, if **there is no artifact with `createdAt > KB_TS`** (the typical case right after the
-     kick-back) → falls into rule 6 → `understand`: the ticket **reopens** to be re-evaluated from scratch
-     (the old spec may be broken). The kick-back `<reason>` is passed to the
-     `context-builder` on reopening. The revert of the merge in `production` and the move to `In
-     Progress` happen in step **c0**.
+> **Recency short-circuit (cheap derivation).** Scan the comments **newest → oldest** and
+> **stop as soon as one of rules 1–6 decides** the stage — an older comment can never override
+> a more recent decision. Derivation only needs, per artifact, the **header**, the single
+> **structured-field line** (the regex match), and its **`createdAt`** — it **does NOT** need
+> the full artifact body. **Do not retain full artifact bodies** in the driver's context: the
+> prose of a Context Spec / Work Log / Review is irrelevant to the stage decision and keeping
+> it only inflates sustained context (see "Per-sweep context boundary" below).
+
 1. Last `## 🔍 Review` whose field matches `^\*\*Verdict:\*\*\s*(APPROVED|REJECTED)\b` = **APPROVED**
    → **integrate + move to status `To Review`** (human gate — see step c2).
    (Header `## 🔍 Review` present but Verdict not matchable → **malformed → `blocked`**.)
@@ -136,7 +130,7 @@ once before any post.
    BEFORE step 1, resolve the human-readable PROSE language for this sweep. This affects
    ONLY the natural-language prose the stations write into Linear comments — **never** the
    protocol markers/headers (`## 🧭 Context Spec` / `## 🔧 Work Log` / `## 🔍 Review` /
-   `## 📚 Relevant memory` / `## ⛔ Kick-back:`) nor the structured fields parsed by the
+   `## 📚 Relevant memory`) nor the structured fields parsed by the
    derivation regexes (`**Blockers:**` / `**Status:** SUCCESS|FAILED` / `**Verdict:**
    APPROVED|REJECTED`), which stay verbatim in English. Read the key from the gitignored
    `<repo>/.env` (no node, no new dependency), in the style of the step −1 lock block:
@@ -153,47 +147,23 @@ once before any post.
    Resolution rules: reads `<repo>/.env`; **missing file / absent-or-empty key /
    unrecognized value → fall back to `en`**. Log the resolved value and **carry
    `LANE_LANG_RESOLVED` through the whole sweep** — it is threaded into every station
-   prompt (step `d.0` / the kick-back reopen path `c0.4`) and reported in step 4.
+   prompt (step `d.0`) and reported in step 4.
    `en` is effectively a no-op (the repo is English by default).
 
 1. `list_issues` by **project ID** (`project: "9a2f315c-8def-4698-ba9a-8d0a680cda13"` — use the **ID**, not the name, which can change), `state: "In Progress"` (**ID resolved in step 0**). Empty → "nothing in the lane", stop.
 
 2. For each ticket (independent ones can run in parallel):
-   a. `list_comments` → compute the **derived stage** (including the **kick-back rule 0**:
-      find the most recent `## ⛔ Kick-back:` → `KB_TS` and ignore artifacts with
-      `createdAt < KB_TS`). If the most recent signal is a kick-back, handle it in step **c0**.
+   a. `list_comments` → compute the **derived stage**.
+      **Scan the comments newest → oldest and short-circuit:** stop as soon as rules 1–6
+      decide the stage (the most recent matching artifact wins; older ones cannot change it).
+      Keep only what the decision needs — each candidate artifact's **header**, its single
+      **structured-field line** (the regex match) and its **`createdAt`** — and **do NOT keep
+      the full artifact bodies** in the driver's context (they are reconstructible from Linear
+      and only inflate sustained cost; see "Per-sweep context boundary").
    b. **Reconcile the label**: if the current `stage:*` label ≠ derived stage, write the
       correct one via `save_issue` `labels: ["<stage-ID>"]` (always by **ID resolved in
       step 0**; CLAUDE.md as fallback).
    c. If the stage is `blocked` → **skip** (it belongs to the human).
-   c0. **Kick-back (revert + reopen).** Applies when the most recent signal on the ticket
-       is a `## ⛔ Kick-back: <reason>` (i.e. `KB_TS` exists and there is no artifact with `createdAt
-       > KB_TS`). Before treating the ticket as `understand`, **undo the integration** and
-       reopen — all **idempotent** (running it 2x does not duplicate the revert nor move twice):
-       1. **Anti-loop first.** If `N` (number of `## ⛔ Kick-back:`) `>= KICKBACK_CAP`
-          (default **2**, configurable) → mark `blocked` + a comment explaining the cap and
-          **do not** reopen (becomes a human gate). Cap distinct from the 3-REJECTED limit.
-       2. **Idempotent revert of the merge** (only if `esteira/<TICKET-ID>` is integrated into
-          `production`):
-          - **Integrated?** `git merge-base --is-ancestor esteira/<TICKET-ID> production`
-            (exit 0 = integrated; exit≠0 = never merged → skip the revert, go to step 3).
-          - **Find the merge:** `git log production --merges --grep "esteira/<TICKET-ID>"
-            --format=%H -n 1` → `<merge-sha>`.
-          - **Already reverted?** `git log production --grep "This reverts commit <merge-sha>"
-            --format=%H -n 1` — if **non-empty**, the revert already exists → **skip** (idempotent).
-          - **Revert:** `git revert -m 1 --no-edit <merge-sha>` on `production` (mainline =
-            1st parent). **Use `git revert`, never `reset --hard`** — `production` is published.
-          - **Conflict** without a safe resolution → `git revert --abort`, mark `blocked` +
-            a comment (human gate) and **do not** reopen.
-       3. **Reopen the ticket:** `save_issue state: "<id-In-Progress>"` (ID resolved in step
-          0). **Do not** set the label by hand — derivation falls into `understand` (rule 6) and
-          step `e` reconciles the label. The branch `esteira/<TICKET-ID>` is **reusable**.
-       4. **Re-execute** following step `d` as a ticket in `understand`, passing the
-          kick-back `<reason>` to the `context-builder` (the old spec was invalidated by
-          rule 0) **and** the prose-language directive of step `d.0.3b`
-          (`LANE_LANG_RESOLVED` from step 0.6). The reopened ticket stays **active** (it
-          occupies the WIP=1 slot; the auto-sequence of step 3 does not pull a new `Todo`
-          while it is active).
    c2. If the stage is `sign-off` (last Review **APPROVED**) → **integrate and finalize for you**:
        - **Idempotent merge:** if `esteira/<TICKET-ID>` is still **not** an ancestor of
          `production` (`git merge-base --is-ancestor esteira/<TICKET-ID> production` → false),
@@ -202,7 +172,9 @@ once before any post.
        - **Move the ticket to status `To Review`** (`save_issue state: "<id-To-Review>"` —
          **ID resolved in step 0**, CLAUDE.md as fallback). It **leaves `In Progress`**:
          it does not occupy the active slot nor is it swept again.
-         It waits for you — you move `To Review` → `Done` (approved) or → `Todo` (rejected).
+         It waits for you — the human gate only **accepts** (`To Review` → `Done`). A problem
+         found after the merge is filed as a **new linked ticket** (regression/bugfix) that
+         flows through the lane normally — the original ticket is terminal once merged.
    d. Otherwise, run the station's agent **once**. Before assembling the prompt and triggering
       the subagent, do the **Recall** (step `d.0`) and prefix the memory block to the prompt.
 
@@ -319,7 +291,17 @@ once before any post.
       7. **`--fake` vs real provider** (same convention as `d.0.5`). By default use the
          **real** provider (transformers); **offline/without a model** → `--fake` (or
          `KB_FAKE_EMBEDDINGS=1`). Any provider failure falls into the fallback (step 6).
-   e. **Recompute** the derived stage (now with the new artifact) and reconcile the output:
+      8. **Discard the artifact body (context boundary).** Once the artifact has passed
+         validation (`d.0.6`), been posted (`save_comment`) and ingested (`d.1`), the driver
+         **drops the full artifact text from its working context**. The only thing the rest
+         of the sweep needs is the **already-validated structured field** (`Verdict` /
+         `Status` / `Blockers`) — which step `e` uses to recompute the stage — plus the new
+         comment id. Retaining the full subagent body (Context Spec / Work Log / Review)
+         after this point serves no purpose and is the main driver of sustained context cost
+         (see "Per-sweep context boundary").
+   e. **Recompute** the derived stage (now with the new artifact) and reconcile the output.
+      This recompute only needs the **already-validated structured field** from `d.0.6` (not
+      the full body discarded in `d.1.8`):
       - If the recomputed stage is `sign-off` (you just posted an APPROVED Review)
         → **execute the procedure of step c2 inline, in this SAME
         sweep**: idempotent merge of `esteira/<TICKET-ID>` → `production` (only if not yet
@@ -347,9 +329,18 @@ once before any post.
      label — it enters without an artifact = `understand`).
    - **Which `Todo`** — consider only the **eligible** ones: all their `blockedBy` already **integrated**,
      i.e. in `To Review` **or** `Done` (**do not** wait for the human `Done` — entering `To Review`
-     already merged into `production` in step c2). Among the eligible ones, order by:
-     1. **Epic continuity:** same `parent` as the last ticket you worked on
-        (the one that reached `To Review`/`Done` most recently), if any.
+     already merged into `production` in step c2). Query the candidate `Todo`s scoped to the
+     **project ID** and `state: "Todo"`, reading only the **minimal fields** needed to order
+     them (identifier/number, `priority`, `parent`, `blockedBy` status) — do not pull comment
+     bodies or descriptions here. Among the eligible ones, order by:
+     1. **Epic continuity (reconstructed from Linear, NOT session memory).** Determine the
+        **epic-continuity anchor** by querying the project's tickets in `To Review`/`Done`
+        and taking the one with the **greatest `updatedAt`** (the most recently integrated
+        ticket); its `parent` is the anchor epic. Prefer eligible `Todo`s with the **same
+        `parent`** as that anchor. This is recomputed every sweep from Linear, so it survives
+        a fresh/compacted context — the driver **never** relies on remembering "the last
+        ticket I worked on" from a previous sweep. (No `To Review`/`Done` ticket yet → no
+        anchor → skip this criterion.)
      2. **Priority:** Urgent > High > Medium > Low > None.
      3. **Lowest ticket number** (tie-break).
    - If no `Todo` is eligible (all blocked by a still **active** dependency or
@@ -362,6 +353,14 @@ once before any post.
    <en|pt-BR>`). Then: each ticket, stage before → after, what was left awaiting a human,
    and whether any `Todo` was pulled (which one and why) or why none was.
 
+   - **Context boundary (before releasing the lock):** the sweep is over — **discard the
+     sweep's entire working set**: the active ticket's `list_comments` history, every subagent
+     artifact body, the recall block and any transient derivation scratch. Nothing here needs
+     to survive into the next heartbeat: ALL cross-sweep state is reconstructed from Linear
+     (coordinates in step 0, derived stage in step 2a, epic-continuity anchor in step 3) and
+     disk (the lock). The next `/loop /lane` heartbeat must start from a **fresh / compacted
+     context** and rebuild everything it needs — it must NOT depend on anything remembered
+     from this sweep. (See "Per-sweep context boundary" in Rules.)
    - **Release the lock (last, after the report):** `rm -rf .claude/esteira.lock.d`. Do this
      even if the sweep did not touch anything. If the driver dies before reaching here, the
      TTL (step −1) reclaims the lock on the next sweep — no lock stays stuck forever.
@@ -369,6 +368,12 @@ once before any post.
 ## Rules
 
 - **One stage advance per ticket per sweep.** The `/loop` handles the repetition.
+- **Stateless per sweep.** A sweep is a **self-contained context unit**: it reconstructs ALL
+  cross-sweep state from Linear (coordinates in step 0, the derived stage in step 2a, the
+  epic-continuity anchor in step 3) and disk (the lock in step −1), and must **NOT** depend on
+  anything remembered from a previous sweep. This is what makes a fresh/compacted context per
+  heartbeat safe — the truth lives in Linear (artifacts) + git (`production`/branches) + disk
+  (lock), never in the driver's session memory.
 - **An artifact outside the template is not posted.** Derivation decides only by the **structured
   field** (line anchored at `^`, canonical regexes at the top); never by a substring in the
   prose. The pre-post validation (`d.0.6`) guarantees that every posted artifact has a header +
@@ -387,21 +392,11 @@ once before any post.
   `To Review` and runs the next eligible one. It only stops when there is a `blocked` or no eligible `Todo`.
 - **Never** move to `Done` — that is the human exit gate. The lane stops at `To Review` (the merge already
   happened); you validate and move `To Review` → `Done`.
-- **Kick-back (rejecting in `To Review`/`Done`):** since artifacts are the source of truth,
-  **moving the status back is not enough** to re-execute — the old APPROVED review keeps
-  deriving `To Review` and the merge is already in `production`. The human signal is a comment with
-  the fixed header `## ⛔ Kick-back: <reason>` (signal, not a station artifact). With it, the driver,
-  **automatically and idempotently** (see derivation rule 0 + step c0):
-  1. **Invalidates** every artifact with `createdAt < createdAt of the most recent kick-back` (`KB_TS`)
-     — derivation now looks only at later artifacts, so the ticket goes back to `understand`.
-  2. **Reverts the merge** in `production` (`git merge-base --is-ancestor` + `git log --merges
-     --grep` to find the merge + prior-revert check + `git revert -m 1 --no-edit`;
-     **never** `reset --hard`). Conflict without a safe resolution → `blocked`.
-  3. **Reopens** the ticket in `In Progress` at the **understand** stage (re-evaluate from scratch — the old
-     spec may be broken), passing the `<reason>` to the `context-builder`.
-  4. **Anti-loop:** `N` = number of `## ⛔ Kick-back:` comments; if `N >= KICKBACK_CAP`
-     (default **2**, configurable) → `blocked` instead of reopening. Cap **independent** of the
-     3-REJECTED limit.
+- **Forward-only (a merged ticket is terminal):** once a ticket is integrated and moved to
+  `To Review`/`Done`, the lane never reopens nor reverts it. A problem found after the merge
+  becomes a **NEW linked ticket** (regression/bugfix) that flows through the lane normally. An
+  emergency revert of a bad merge is a rare, **manual, human action** — the lane does not
+  automate it.
 - **Pulling from `Todo`** is only allowed by the auto-sequence (step 3): when there is no active
   ticket and there is an eligible `Todo`. The lane self-starts — it does **not** wait for a human entry
   gate. The exit (`→ Done`) remains a human gate.
@@ -413,19 +408,30 @@ once before any post.
   replaces the previous one.
 - If the derived stage and the label diverge, **the artifact wins** — fix the label, not the artifact.
 
-## Scenario: kick-back (rejection on exit)
+## Per-sweep context boundary (sustained cost)
 
-WLN-XX is in `To Review` (Review APPROVED, merge already in `production`). You review it, you do not
-like it, and you paste a comment `## ⛔ Kick-back: the empty case was not handled`.
+Under `/loop /lane` the driver runs as a long-lived heartbeat. If each sweep kept its working
+set — the active ticket's full `list_comments` re-read every sweep, plus the full subagent
+artifact bodies (Context Spec / Work Log / Review) flowing back from the stations — that text
+would **accumulate across heartbeats** and push the sustained context past 150k+. None of it
+needs to persist: every sweep is **stateless** (see Rules) and rebuilds what it needs.
 
-1. **Happy path.** On the next sweep, rule 0 finds the kick-back (`KB_TS`) and invalidates the
-   old Context Spec/Work Log/Review (all with `createdAt < KB_TS`). There is no later artifact
-   → stage `understand`. Step c0 confirms that `esteira/WLN-XX` is an ancestor of
-   `production`, finds the merge, reverts it with `git revert -m 1 --no-edit`, and reopens the ticket in
-   `In Progress`. The `context-builder` receives the `<reason>` and redoes the spec.
-2. **Idempotency.** If the sweep runs again before a new artifact exists, c0 sees that there is already
-   a `This reverts commit <merge-sha>` commit in `production` → **skips** the revert; and the
-   ticket is already in `In Progress` → the `save_issue` is a no-op. Nothing duplicates.
-3. **Anti-loop.** If this is the **2nd** `## ⛔ Kick-back:` of the ticket (`N >= KICKBACK_CAP` = 2),
-   the driver marks `blocked` + a comment instead of reopening — it avoids infinite ping-pong. This
-   ceiling is separate from the 3-REJECTED-reviews limit.
+**Mechanism (where the cost is shed):**
+- **Derivation (step 2a)** scans comments newest → oldest and **short-circuits** at the first
+  deciding rule, keeping only `header + structured-field line + createdAt` per candidate —
+  **never** the full bodies.
+- **Post + ingest (step d.1.8)** discards each subagent artifact body right after
+  `save_comment` + Ingest; only the validated structured field (used by step `e`) and the new
+  comment id are carried forward.
+- **Sweep end (step 4)** marks the **context boundary**: discard the whole working set
+  (comment history, artifact texts, recall block) before releasing the lock. The next
+  heartbeat must start from a **fresh / compacted context**.
+
+**Why it's safe:** the boundary changes **nothing** about correctness because the driver is
+already stateless-per-sweep. All durable state is reconstructed every sweep from the only real
+stores: **Linear** (coordinates by name in step 0, the derived stage from artifacts in step 2a,
+the epic-continuity anchor as max-`updatedAt` `To Review`/`Done` ticket in step 3) and **git +
+disk** (`production`/`esteira/<TICKET-ID>` for the merge, the
+`.claude/esteira.lock.d` lock). Derivation rules 1–6, the Verdict/Status/Blockers regexes, the
+lock/TTL and the recall/ingest best-effort behavior are all
+unchanged — only the **retention** of already-consumed text changes.

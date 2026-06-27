@@ -109,9 +109,44 @@ real source of truth.
   /loop 15m /lane      # every 15 minutes
   ```
 
+  Each heartbeat is a **stateless context unit** — start it from a fresh / compacted context.
+  The lane reconstructs all cross-sweep state from Linear (coordinates, the derived stage from
+  artifacts, the epic-continuity anchor) plus git/disk every sweep, and discards the active
+  ticket's comment history and the subagent artifact bodies at the sweep boundary. So a
+  long-running loop does **not** accumulate history (sustained context) between sweeps.
+
 Only one driver runs at a time: each sweep acquires a mutual-exclusion lock before touching
 Linear, so two simultaneous `/lane` runs never break the WIP=1 invariant (the second aborts
 silently).
+
+## Code driver (`lane/`) — a headless alternative to `/loop /lane`
+
+The default driver is the prose `/lane` skill, which runs inside a Claude Code session and
+talks to Linear through the **MCP server**. The repo also ships an **opt-in** deterministic
+driver as a standalone Node package in `lane/` that encodes the same state machine in pure,
+unit-tested modules and talks to Linear over its **GraphQL API** — **no MCP at runtime**.
+
+- **Pure core (unit-tested, offline):** `lane/derive.mjs` (derivation rules 1–6 + the canonical
+  Verdict/Status/Blockers regexes, forward-only), `lane/validate.mjs` (the pre-post format gate),
+  `lane/decide.mjs` (WIP=1 + the auto-sequence ordering: epic-continuity → priority → number).
+- **Thin I/O:** `lane/linear.mjs` (GraphQL client over global `fetch`, `LINEAR_API_KEY` from
+  env), `lane/merge.mjs` (idempotent `esteira/<ID>` → `production` merge; a conflict returns a
+  blocked signal, never auto-resolved), `lane/board.mjs` / `lane/post.mjs` (glue).
+- **Runner:** `scripts/lane-tick.sh` is a `flock -n` single-instance wrapper that invokes the
+  sweep (`node lane/run.mjs`) and dispatches the station workers in `.claude/commands/`
+  (`/understand`, `/execute`, `/review`) via `claude -p`.
+
+Run it:
+
+```bash
+cd lane && node --test                 # pure-logic unit tests (offline, no extra deps)
+node lane/run.mjs --dry-run            # derive the next action from a fixture, NO side effects
+scripts/lane-tick.sh --dry-run        # same, behind the flock single-instance guard
+```
+
+Set `LINEAR_API_KEY` in `.env` (see `.env.example`) for the live mode. The code driver is **not**
+the default — the prose `/loop /lane` over the MCP remains the supported path; the live station
+dispatch + posting wired in `scripts/lane-tick.sh` is the deliberately-deferred live-cutover layer.
 
 ## Artifact-comment language (`LANE_LANG`)
 
@@ -127,7 +162,7 @@ cp .env.example .env     # then edit LANE_LANG
   missing `.env` falls back to `en`.
 - **`.env` is gitignored** (never versioned); `.env.example` is the committed template.
 - **Only the prose is localized.** The protocol markers/headers (`## 🧭 Context Spec`,
-  `## 🔧 Work Log`, `## 🔍 Review`, `## ⛔ Kick-back:`) and the parsed fields
+  `## 🔧 Work Log`, `## 🔍 Review`) and the parsed fields
   (`**Blockers:**`, `**Status:** SUCCESS|FAILED`, `**Verdict:** APPROVED|REJECTED`) always
   stay verbatim in English — the state machine parses them with English-anchored regexes.
 
@@ -156,7 +191,16 @@ kb/                       Local vector knowledge base (the agents' memory)
   ingest.mjs                Write an artifact to the KB (WRITE)
   e2e_smoke.mjs             Offline smoke for recall + ingest
   index.js                  Library entry point
-.claude/skills/lane/      The /lane orchestrator (SKILL.md = the driver)
+.claude/skills/lane/      The /lane orchestrator (SKILL.md = the prose driver)
 .claude/agents/           The stations: context-builder.md, executor.md, reviewer.md
+.claude/commands/         Station workers for the code driver (/understand, /execute, /review)
+lane/                     Opt-in code driver: pure derive/validate/decide + Linear/git I/O
+  derive.mjs                Derivation rules 1–6 + canonical regexes (PURE)
+  validate.mjs              Pre-post format gate (PURE)
+  decide.mjs                WIP=1 + auto-sequence ordering (PURE)
+  linear.mjs                GraphQL client (global fetch, injectable)
+  merge.mjs                 Idempotent esteira/<ID> → production merge
+  run.mjs                   Sweep entrypoint (--dry-run prints the action, no side effects)
+scripts/lane-tick.sh      flock single-instance runner for the code driver
 CLAUDE.md                 Full project contract (state machine, handoffs, board IDs)
 ```

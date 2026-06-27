@@ -22,6 +22,13 @@ agents context and memory. No service of your own to deploy.
 - **One driver at a time:** each sweep acquires a mutual-exclusion lock
   (`.claude/esteira.lock.d/`, atomic `mkdir`, TTL 30min) before touching Linear and
   releases it at the end. Two simultaneous `/lane` runs don't break WIP=1 — the 2nd aborts silently.
+- **Stateless per sweep (sustained-cost boundary):** each `/loop /lane` heartbeat is a
+  self-contained context unit and should start from a **fresh / compacted context**. The lane
+  reconstructs ALL cross-sweep state from Linear (coordinates by name, the derived stage from
+  artifacts, the epic-continuity anchor) + git/disk (`production`/branches, the lock) — it
+  **never** relies on session memory. So the driver doesn't re-accumulate the active ticket's
+  full comment history nor the subagent artifact bodies between heartbeats; they're discarded
+  after each sweep (details in the `/lane` skill, "Per-sweep context boundary").
 
 ## State machine
 
@@ -31,7 +38,6 @@ never causes regression/rework. "No label" ≠ "new"; new = no artifact.
 
 Derived stage (most recent → oldest):
 ```
-Kick-back (⛔)          → invalidates artifacts < the kick-back's createdAt; reverts merge + reopens at understand (cap 2 → blocked)
 Review APPROVED        → integrate + move to status `To Review` (human gate)
 Review REJECTED (<3)   → execution  | (>=3) → blocked
 Work Log SUCCESS       → review
@@ -54,7 +60,7 @@ the local `production` — the default `"fresh"` would lose the already-merged t
 |---|---|
 | Review APPROVED | **auto, in the same sweep:** merge `esteira/<TICKET-ID>` → `production` (idempotent) **and move the ticket to `To Review`**. The queue does **not** wait for you. |
 | you move `To Review` → `Done` | just closes the ticket (the merge already happened) |
-| you reject: move `To Review`/`Done` → `Todo` + comment `## ⛔ Kick-back: <reason>` | **auto (idempotent):** the kick-back invalidates the previous artifacts (createdAt < its own), reverts the merge on `production` (`git revert -m 1`), and reopens the ticket in `In Progress`/`understand` passing the `<reason>` to the context-builder. Moving the status is not enough — the artifact is the truth. Anti-loop: 2 kick-backs → `blocked`. |
+| problem found after merge | **forward-only:** a merged ticket is terminal — the lane never reopens nor reverts it. File a **NEW linked ticket** (regression/bugfix) that flows through the lane normally. An emergency revert of a bad merge is a rare, **manual, human action** — not automated by the lane. |
 
 **Autonomy & WIP=1:** the lane runs the whole epic on its own, stacking the tickets in
 `To Review` for you to validate whenever you want. It only stops on a **real block** (`blocked`) or
@@ -133,6 +139,11 @@ use by default (step 3). Idempotent.
 - One pass: `/lane`
 - In a loop: `/loop /lane` (no interval = self-paced) or `/loop 15m /lane`
 
+Each heartbeat is **stateless-per-sweep**: start it from a fresh / compacted context. The lane
+rebuilds everything from Linear + git/disk every sweep and discards the active ticket's comment
+history and the subagent artifact bodies at the sweep boundary, so a long-running `/loop` does
+**not** accumulate sustained context across heartbeats.
+
 **3. Recall + ingest on the SAME default `kb.db`.** The driver calls `kb/recall.mjs` (READ →
 injects `## 📚 Relevant memory` into the prompt) and `kb/ingest.mjs` (WRITE) **without** `--db`:
 both resolve `kb.db` **anchored at the repo root** (independent of the CWD). Don't pass
@@ -145,12 +156,33 @@ cd kb && KB_FAKE_EMBEDDINGS=1 node e2e_smoke.mjs   # memory block + before/after
 cd kb && KB_FAKE_EMBEDDINGS=1 npm test             # full suite, offline
 ```
 
+**Code driver (`lane/`) — headless alternative to `/loop /lane`.** Besides the prose
+`/lane` skill (which drives the board through the Linear **MCP** inside a Claude Code
+session), the repo ships an **opt-in** deterministic driver as a standalone Node package
+in `lane/` — **no MCP at runtime**. It encodes the same state machine in pure, unit-tested
+modules and talks to Linear over the GraphQL API:
+
+- `lane/derive.mjs` — PURE port of derivation rules 1–6 + the canonical Verdict/Status/Blockers
+  regexes (forward-only: no kick-back). `lane/validate.mjs` — the d.0.6 pre-post format gate.
+  `lane/decide.mjs` — WIP=1 + auto-sequence ordering (epic-continuity → priority → number).
+- `lane/linear.mjs` — thin GraphQL client (global `fetch`, `LINEAR_API_KEY` from env).
+  `lane/merge.mjs` — idempotent `esteira/<ID>` → `production` merge (is-ancestor guard;
+  conflict → blocked signal, never auto-resolved). `lane/board.mjs` / `lane/post.mjs` — glue.
+- `lane/run.mjs --dry-run` — derives the next action from a board fixture and prints it with
+  **zero side effects** (offline; no Linear/git writes). `scripts/lane-tick.sh` — `flock -n`
+  single-instance runner that invokes the sweep and dispatches the station workers in
+  `.claude/commands/` (`/understand`, `/execute`, `/review`) via `claude -p`.
+- Tests: `cd lane && node --test` (pure-logic coverage, fully offline, no extra deps).
+- Config: set `LINEAR_API_KEY` in `.env` (see `.env.example`). The code driver is **not** the
+  default — the prose `/loop /lane` over the MCP remains the supported path; the live station
+  dispatch + posting in `scripts/lane-tick.sh` is the deferred live-cutover layer.
+
 **Artifact-comment language (`LANE_LANG`).** The human-readable PROSE the lane writes into
 Linear comments (Context Spec / Work Log / Review) is language-configurable via a gitignored
 root `.env` key `LANE_LANG` (default `en`; accepted `en`/`pt`/`pt-BR`; unrecognized/empty/missing
 → `en`). `cp .env.example .env` and edit it; `.env.example` is the committed template. The
 driver resolves it at sweep start (step 0.6 of the `/lane` skill) and threads it into every
 station prompt. **Only prose is localized** — the protocol markers/headers (`## 🧭 Context Spec`
-/ `## 🔧 Work Log` / `## 🔍 Review` / `## ⛔ Kick-back:`) and the parsed fields (`**Blockers:**`
+/ `## 🔧 Work Log` / `## 🔍 Review`) and the parsed fields (`**Blockers:**`
 / `**Status:** SUCCESS|FAILED` / `**Verdict:** APPROVED|REJECTED`) stay verbatim in English, since
 the state machine parses them with English-anchored regexes.

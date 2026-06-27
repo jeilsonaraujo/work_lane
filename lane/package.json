@@ -1,0 +1,10 @@
+{
+  "name": "lane-driver",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Work Lane driver as code: a deterministic, headless alternative to the /loop /lane prose driver. Pure derivation/validation/decision core + thin Linear/git I/O, no runtime dependencies (global fetch).",
+  "scripts": {
+    "test": "node --test"
+  }
+}

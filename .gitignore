@@ -13,6 +13,8 @@ npm-debug.log*
 
 # Single-driver lock for the lane (anti-concurrency) — runtime, never versioned
 .claude/esteira.lock.d/
+# flock lock file for the code driver's scripts/lane-tick.sh — runtime, never versioned
+.claude/esteira.lock
 
 # Runtime language preference for Linear comment prose — never versioned
 .env

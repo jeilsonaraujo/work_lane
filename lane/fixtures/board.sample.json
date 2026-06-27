@@ -1,0 +1,15 @@
+{
+  "inProgress": {
+    "ticket": { "id": "iss-51", "identifier": "WLN-51", "number": 51, "title": "lane driver as code", "priority": 2, "parent": "epic-14" },
+    "artifacts": [
+      { "header": "## 🧭 Context Spec", "body": "## 🧭 Context Spec\n\n**Scope:** build lane/\n**Blockers:** ", "createdAt": "2026-06-26T09:00:00Z" }
+    ]
+  },
+  "todos": [
+    { "id": "iss-52", "identifier": "WLN-52", "number": 52, "priority": 2, "parent": "epic-14", "blockedBy": [{ "state": "To Review" }] },
+    { "id": "iss-60", "identifier": "WLN-60", "number": 60, "priority": 1, "parent": "epic-99", "blockedBy": [] }
+  ],
+  "integrated": [
+    { "id": "iss-50", "parent": "epic-14", "updatedAt": "2026-06-26T08:00:00Z" }
+  ]
+}
