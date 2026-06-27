@@ -147,6 +147,73 @@ test('ingest persiste chunks + vetores + metadados', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Idempotência por `source`: reingest substitui em vez de duplicar.
+// ---------------------------------------------------------------------------
+test('ingest é idempotente por source (reingest não duplica, sem órfãos)', async () => {
+  const mem = openMemory(':memory:');
+  const text = 'palavra '.repeat(200); // múltiplos chunks
+  const doc = {
+    ticketId: 'DIM-23',
+    stage: 'execution',
+    kind: 'spec',
+    source: 'context-spec',
+    text,
+    chunkOpts: { size: 200, overlap: 40 },
+  };
+
+  const first = await mem.ingest(doc);
+  assert.ok(first.chunks > 1, 'primeira ingestão gera vários chunks');
+
+  const second = await mem.ingest(doc); // mesmo source + mesmo texto
+  assert.equal(second.chunks, first.chunks, 'reingest gera o mesmo nº de chunks');
+
+  const nChunks = mem.db.prepare('SELECT COUNT(*) AS n FROM chunks').get().n;
+  const nVec = mem.db.prepare('SELECT COUNT(*) AS n FROM vec_chunks').get().n;
+  assert.equal(nChunks, first.chunks, 'COUNT(chunks) não cresce no reingest');
+  assert.equal(nChunks, nVec, 'sem órfãos: chunks == vec_chunks');
+  mem.close();
+});
+
+test('ingest com source=null não deduplica (contagem cresce)', async () => {
+  const mem = openMemory(':memory:');
+  const doc = { ticketId: 'DIM-23', source: null, text: 'sem fonte definida' };
+
+  await mem.ingest(doc);
+  const afterFirst = mem.db.prepare('SELECT COUNT(*) AS n FROM chunks').get().n;
+  await mem.ingest(doc);
+  const afterSecond = mem.db.prepare('SELECT COUNT(*) AS n FROM chunks').get().n;
+
+  assert.equal(afterSecond, afterFirst * 2, 'source=null acumula (sem dedup)');
+  const nVec = mem.db.prepare('SELECT COUNT(*) AS n FROM vec_chunks').get().n;
+  assert.equal(afterSecond, nVec, 'sem órfãos mesmo com source=null');
+  mem.close();
+});
+
+test('reingest de uma source não afeta outras sources nem source IS NULL', async () => {
+  const mem = openMemory(':memory:');
+  await mem.ingest({ ticketId: 'A', source: 'src-a', text: 'conteúdo da fonte A' });
+  await mem.ingest({ ticketId: 'B', source: 'src-b', text: 'conteúdo da fonte B' });
+  await mem.ingest({ ticketId: 'N', source: null, text: 'conteúdo sem fonte' });
+
+  const countBy = (where, ...args) =>
+    mem.db.prepare(`SELECT COUNT(*) AS n FROM chunks WHERE ${where}`).get(...args).n;
+  const bBefore = countBy('source = ?', 'src-b');
+  const nullBefore = countBy('source IS NULL');
+
+  // reingest só de src-a
+  await mem.ingest({ ticketId: 'A', source: 'src-a', text: 'conteúdo da fonte A' });
+
+  assert.equal(countBy('source = ?', 'src-a'), 1, 'src-a não duplicou');
+  assert.equal(countBy('source = ?', 'src-b'), bBefore, 'src-b intacta');
+  assert.equal(countBy('source IS NULL'), nullBefore, 'source IS NULL intacta');
+
+  const nChunks = mem.db.prepare('SELECT COUNT(*) AS n FROM chunks').get().n;
+  const nVec = mem.db.prepare('SELECT COUNT(*) AS n FROM vec_chunks').get().n;
+  assert.equal(nChunks, nVec, 'sem órfãos após reingest isolado');
+  mem.close();
+});
+
+// ---------------------------------------------------------------------------
 // Query por similaridade: recupera o chunk esperado como top-1, respeita k.
 // ---------------------------------------------------------------------------
 test('query retorna top-k por similaridade respeitando k', async () => {

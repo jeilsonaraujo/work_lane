@@ -11,10 +11,17 @@
 // - SOMENTE JSON vai para stdout; erros vão para stderr + exit 1.
 import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const { openMemory } = require('./index.js');
 const { createProvider } = require('./embeddings.js');
+
+// kb.db default ancorado na RAIZ do repo (script vive em kb/, então '..' = raiz),
+// não no CWD — assim recall/ingest convergem no MESMO DB de qualquer diretório.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_DB = path.resolve(__dirname, '..', 'kb.db');
 
 const { values } = parseArgs({
   options: {
@@ -22,7 +29,7 @@ const { values } = parseArgs({
     stage: { type: 'string' },
     kind: { type: 'string' },
     source: { type: 'string' },
-    db: { type: 'string', default: 'kb.db' },
+    db: { type: 'string', default: DEFAULT_DB },
     fake: { type: 'boolean', default: false },
   },
 });

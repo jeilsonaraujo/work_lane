@@ -11,8 +11,10 @@ const sqliteVec = require('sqlite-vec');
  * (fake e real). Trocar o modelo/dim exige uma nova migration + re-index —
  * ver memory/README.md.
  *
- * 384 = dimensão de `bge-small` (transformers.js). O provider fake gera vetores
- * com esta mesma dimensão para que os testes exercitem o store vetorial real.
+ * 384 = dimensão de `paraphrase-multilingual-MiniLM-L12-v2` (transformers.js),
+ * o modelo multilíngue (PT incluso) default do provider real. O provider fake
+ * gera vetores com esta mesma dimensão para que os testes exercitem o store
+ * vetorial real.
  */
 const EMBED_DIM = 384;
 

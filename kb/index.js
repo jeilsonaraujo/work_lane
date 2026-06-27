@@ -67,6 +67,10 @@ class Memory {
     const vectors = await this.provider.embed(pieces);
 
     const run = this.db.transaction(() => {
+      // Idempotência por `source`: reingerir o mesmo artefato substitui os
+      // chunks anteriores em vez de duplicar. `source == null` não dispara
+      // dedup (senão apagaria todos os chunks com source IS NULL).
+      if (source != null) this._purgeSource(source);
       const ids = [];
       for (let i = 0; i < pieces.length; i++) {
         const info = this._insertChunk.run({
@@ -150,6 +154,40 @@ class Memory {
     const knnK = Math.max(k * 4, k);
     const stmt = this.db.prepare(sql);
     return stmt.all(toBlob(qvec), knnK, ...params, k);
+  }
+
+  /**
+   * Remove todos os chunks (metadados + vetores) de uma dada `source`.
+   * Como `chunks.id` casa com o `rowid` de `vec_chunks` (sem FK/cascade entre
+   * a tabela virtual e a relacional), apagamos os dois pareados numa transação.
+   *
+   * @param {string} source
+   * @returns {number} quantidade de chunks removidos.
+   */
+  deleteBySource(source) {
+    const run = this.db.transaction(() => this._purgeSource(source));
+    return run();
+  }
+
+  /**
+   * Núcleo de deleção por `source` SEM `db.transaction` própria, para ser
+   * reusado tanto por `deleteBySource` (que faz o wrap transacional) quanto por
+   * `ingest` (já rodando dentro da sua transação). Evita transação aninhada e
+   * preserva o pareamento `chunks`↔`vec_chunks` (mesmo id/rowid).
+   *
+   * @param {string} source
+   * @returns {number} quantidade de chunks removidos.
+   */
+  _purgeSource(source) {
+    const ids = this.db
+      .prepare('SELECT id FROM chunks WHERE source = ?')
+      .all(source)
+      .map((r) => r.id);
+    const delVec = this.db.prepare('DELETE FROM vec_chunks WHERE rowid = ?');
+    // sqlite-vec exige a rowid como inteiro no bind — mesmo padrão do ingest.
+    for (const id of ids) delVec.run(BigInt(id));
+    this.db.prepare('DELETE FROM chunks WHERE source = ?').run(source);
+    return ids.length;
   }
 
   close() {

@@ -1,6 +1,6 @@
 ---
 name: esteira
-description: Faz UMA varredura da esteira de tasks no Linear (projeto Mobile App). Lê os tickets em "In Progress", deriva o estágio de cada um pelos ARTEFATOS (comentários), reconcilia o label, aciona o agente da estação e grava o artefato. Use com /loop para rodar em heartbeat.
+description: Faz UMA varredura da esteira de tasks no Linear (projeto Auto Lane). Lê os tickets em "In Progress", deriva o estágio de cada um pelos ARTEFATOS (comentários), reconcilia o label, aciona o agente da estação e grava o artefato. Quando a review aprova, integra e move p/ "To Review" (gate humano). Use com /loop para rodar em heartbeat.
 ---
 
 # Esteira — uma varredura
@@ -17,7 +17,7 @@ de estágio nem refaz trabalho já concluído.
 
 ### Como derivar o estágio (olhando `list_comments`, do mais recente p/ o mais antigo)
 
-1. Último `## 🔍 Review` = **APPROVED** → `sign-off`  (gate humano — PULE)
+1. Último `## 🔍 Review` = **APPROVED** → **integra + move p/ status `To Review`** (gate humano — ver passo c2)
 2. Último `## 🔍 Review` = **REJECTED**:
    - nº de reviews REJECTED < 3 → `execution`
    - >= 3 → `blocked`
@@ -32,22 +32,21 @@ de estágio nem refaz trabalho já concluído.
 
 ## Passos da varredura
 
-1. `list_issues` com `project: "Mobile App"`, `state: "In Progress"`. Vazio → "nada na esteira", pare.
+1. `list_issues` por **ID do projeto** (`project: "9a2f315c-8def-4698-ba9a-8d0a680cda13"` — use o **ID**, não o nome, que pode mudar), `state: "In Progress"`. Vazio → "nada na esteira", pare.
 
 2. Para cada ticket (independentes podem rodar em paralelo):
    a. `list_comments` → calcule o **estágio derivado**.
    b. **Reconcilie o label**: se o label `stage:*` atual ≠ estágio derivado, grave o
       correto via `save_issue` `labels: ["<ID-do-estágio>"]` (sempre por **ID**, ver CLAUDE.md).
    c. Se o estágio for `blocked` → **pule** (é do humano).
-   c2. Se o estágio for `sign-off` → **integre e pule** (aguarda validação assíncrona sua):
-       - Se `esteira/<TICKET-ID>` ainda **não** é ancestral de `production`
-         (`git merge-base --is-ancestor esteira/<TICKET-ID> production` → falso), faça o
-         merge `esteira/<TICKET-ID>` → `production` **agora** (a review já aprovou).
-         **Idempotente:** se já é ancestral, não faça nada.
-       - Se o merge der **conflito** que você não resolve com segurança, aborte e marque o
-         ticket `blocked` com um comentário do motivo (vira gate humano).
-       - O ticket segue `In Progress` + label `sign-off`. Ele **não ocupa a vaga ativa** —
-         a esteira já pode puxar o próximo. Você valida quando quiser (mover → `Done`).
+   c2. Se o estágio for `sign-off` (último Review **APPROVED**) → **integre e finalize p/ você**:
+       - **Merge idempotente:** se `esteira/<TICKET-ID>` ainda **não** é ancestral de
+         `production` (`git merge-base --is-ancestor esteira/<TICKET-ID> production` → falso),
+         faça o merge `esteira/<TICKET-ID>` → `production` **agora**. Se já é ancestral, nada.
+       - **Conflito** sem resolução segura → marque `blocked` + comentário (vira gate humano).
+       - **Mova o ticket p/ o status `To Review`** (`save_issue state: "<id-To-Review>"`, ver
+         CLAUDE.md). Ele **sai de `In Progress`**: não ocupa a vaga ativa nem é varrido de novo.
+         Fica te aguardando — você move `To Review` → `Done` (aprovou) ou → `Todo` (reprovou).
    d. Senão, rode o agente da estação **uma vez**. Antes de montar o prompt e acionar
       o subagente, faça o **Recall** (passo `d.0`) e prefixe o bloco de memória ao prompt.
 
@@ -107,19 +106,20 @@ de estágio nem refaz trabalho já concluído.
          `<conteúdo-do-artefato> | node kb/ingest.mjs --ticket <TICKET-ID> --stage <understand|execution|review> --kind <spec|worklog|review> --source <comment-id> [--fake]`
       3. **Mapeamento estágio→kind:** `understand → spec`, `execution → worklog`,
          `review → review` (os mesmos `kind` que o Recall consulta em `d.0`).
-      4. **`--db` CONSISTENTE com o Recall (CRÍTICO).** O passo `d.0` chama
-         `node kb/recall.mjs ...` **SEM** `--db` (usa o default `kb.db` no cwd da raiz). O
-         Ingest deve **TAMBÉM omitir** `--db` (mesmo default `kb.db`). **NÃO** passe
-         `--db kb/kb.db` — apontaria para um DB diferente do recall, e a memória escrita
-         nunca seria lida de volta.
-      5. **Idempotência (chave = `source` = id do comentário).** A camada `kb/` **não**
-         deduplica por `source` (é `INSERT` puro, sem `UNIQUE`/upsert): ingerir o mesmo
-         `source` 2× **duplica** os chunks. A idempotência vem da **ORQUESTRAÇÃO**: o driver
-         ingere **inline, UMA vez**, no exato momento em que cria o artefato. Como o estágio
-         é **derivado dos artefatos** e cada artefato é postado **1×**, uma 2ª varredura
-         recalcula o estágio (já avançado) e **não reposta nem reingere** aquele `source`.
-         *(Risco residual, fora de escopo: se algum dia o driver reingerir artefatos
-         pré-existentes — ex.: backfill — duplicaria; a dedup teria de ser adicionada lá.)*
+      4. **`--db`: simplesmente OMITA** (Recall e Ingest). O default de ambos é
+         `kb.db` **ancorado na raiz do repo** (resolvido pelo próprio script, independente
+         do CWD), então recall e ingest sempre convergem no MESMO DB sem você passar nada.
+         Só use `--db <x>` para apontar deliberadamente para outro arquivo.
+      5. **Idempotência (chave = `source` = id do comentário).** A camada `kb/` **deduplica
+         por `source`**: quando há `--source`, `Memory.ingest` remove-antes-de-inserir os
+         chunks daquela `source` (metadados + vetores, na mesma transação), então reingerir o
+         mesmo `source` **substitui** em vez de duplicar (`source` vazio/null = sem dedup). A
+         **ORQUESTRAÇÃO** vira **rede de segurança**, não a única garantia: o driver ainda
+         ingere **inline, UMA vez**, no exato momento em que cria o artefato — como o estágio é
+         **derivado dos artefatos** e cada artefato é postado **1×**, uma 2ª varredura recalcula
+         o estágio (já avançado) e **não reposta nem reingere** aquele `source`.
+         *(Risco residual coberto: reingerir artefatos pré-existentes — ex.: backfill — agora é
+         seguro pela dedup na camada `kb/`; o caso só duplicaria se `source` viesse vazio.)*
       6. **Fallback best-effort** (espelho do `d.0.4`). Se o ingest sair com **exit≠0**
          (provider indisponível, `kb.db` ilegível, etc.) → **logue e siga**. O ingest
          **nunca** bloqueia nem regride o ticket; a fonte de verdade é o artefato no Linear.
@@ -131,24 +131,25 @@ de estágio nem refaz trabalho já concluído.
 
 3. **Auto-sequência (mantém a esteira ocupada).** A esteira é **pull-based com WIP=1**: no
    máximo **um** ticket *ativo* por vez (ativo = estágio derivado em `understand`,
-   `execution` ou `review`). Tickets em `sign-off`/`blocked` estão parados em humano e
-   **não** contam como ativos. Depois do passo 2, avalie a vaga:
+   `execution` ou `review`, status `In Progress`). Tickets em `To Review`/`Done` (já saíram
+   do `In Progress`) ou `blocked` (parados em humano) **não** contam como ativos. Depois do
+   passo 2, avalie a vaga:
    - **Gatilho:** **nenhum** ticket ativo **E** existe pelo menos um `Todo` elegível.
-     Não importa se há tickets em `sign-off`/`blocked` esperando humano — eles não ocupam
-     a vaga. A esteira **se auto-inicia**: não há gate humano de entrada. Só NÃO puxe se
-     já houver um ticket ativo, ou se nenhum `Todo` for elegível.
+     Não importa quantos tickets estejam em `To Review`/`blocked` esperando você — eles não
+     ocupam a vaga. A esteira **se auto-inicia**: não há gate humano de entrada. Só NÃO puxe
+     se já houver um ticket ativo, ou se nenhum `Todo` for elegível.
    - Quando o gatilho bate, puxe **um** `Todo` e mova p/ `In Progress` via `save_issue`
      (sem mexer no label de stage — ele entra sem artefato = `understand`).
    - **Qual `Todo`** — considere só os **elegíveis**: todos os `blockedBy` já **integrados**,
-     i.e. em `sign-off` **ou** `Done` (**não** espere o `Done` humano — o sign-off já mergeou
-     em `production` no passo c2). Entre os elegíveis, ordene por:
+     i.e. em `To Review` **ou** `Done` (**não** espere o `Done` humano — entrar em `To Review`
+     já mergeou em `production` no passo c2). Entre os elegíveis, ordene por:
      1. **Continuidade de épico:** mesmo `parent` do último ticket que você trabalhou
-        (o que chegou a `sign-off`/`Done` mais recente), se houver.
+        (o que chegou a `To Review`/`Done` mais recente), se houver.
      2. **Prioridade:** Urgent > High > Medium > Low > None.
      3. **Menor número de ticket** (desempate).
    - Se nenhum `Todo` for elegível (todos travados por dependência ainda **ativa** ou
      `blocked`), **não** puxe e diga isso no relatório — a esteira fica ociosa até um
-     `blockedBy` chegar a `sign-off` (integrado) ou um `blocked` ser resolvido.
+     `blockedBy` chegar a `To Review` (integrado) ou um `blocked` ser resolvido.
 
 4. Reporte: cada ticket, estágio antes → depois, o que ficou aguardando humano, e se
    algum `Todo` foi puxado (qual e por quê) ou por que nenhum foi.
@@ -159,18 +160,19 @@ de estágio nem refaz trabalho já concluído.
 - **Idempotência:** rodar a mesma varredura 2x não pode refazer trabalho. Como o
   estágio vem dos artefatos, um ticket com Work Log nunca volta a rodar o executor.
 - **Tentativas** = nº de comentários `## 🔍 Review` REJECTED (não use marcador separado).
-- **WIP=1 é invariante:** no máximo **um** ticket *ativo* (`understand`/`execution`/`review`)
-  a qualquer momento. Tickets em `sign-off`/`blocked` não contam. Nunca acione duas estações
-  ao mesmo tempo.
-- **Integração automática no sign-off:** quando a review aprova, o driver mergeia
-  `esteira/<TICKET-ID>` → `production` (idempotente, passo c2) e segue. A esteira **não
-  espera** sua validação para avançar — empilha os tickets prontos em `sign-off` e roda o
-  próximo elegível. Só para de verdade quando há um `blocked` ou nenhum `Todo` elegível.
-- **Nunca** mova p/ `Done` — é gate humano de saída (validação assíncrona; o merge já ocorreu).
-- **Kick-back:** se você achar problema num ticket em `sign-off`/`Done` e movê-lo p/ `Todo`,
-  como os artefatos são a fonte de verdade, **mover de status não basta** para reexecutar:
-  é preciso **reverter o merge** em `production` e invalidar os artefatos daquele ticket
-  (a review aprovada faz o estágio derivar `sign-off`). Fluxo de kick-back automático: **a refinar.**
+- **WIP=1 é invariante:** no máximo **um** ticket *ativo* (`understand`/`execution`/`review`,
+  status `In Progress`) a qualquer momento. Tickets em `To Review`/`Done`/`blocked` não contam.
+  Nunca acione duas estações ao mesmo tempo.
+- **Integração automática + `To Review`:** quando a review aprova, o driver mergeia
+  `esteira/<TICKET-ID>` → `production` (idempotente, passo c2) e **move o ticket p/ `To Review`**.
+  A esteira **não espera** sua validação para avançar — empilha os tickets prontos em
+  `To Review` e roda o próximo elegível. Só para quando há `blocked` ou nenhum `Todo` elegível.
+- **Nunca** mova p/ `Done` — é gate humano de saída. A esteira para no `To Review` (o merge já
+  ocorreu); você valida e move `To Review` → `Done`.
+- **Kick-back:** se você reprovar um ticket em `To Review`/`Done` e movê-lo p/ `Todo`, como os
+  artefatos são a fonte de verdade, **mover de status não basta** p/ reexecutar: é preciso
+  **reverter o merge** em `production` e invalidar os artefatos daquele ticket (a review
+  aprovada faz o estágio derivar de novo `To Review`). Fluxo de kick-back automático: **a refinar.**
 - **Puxar do `Todo`** só é permitido pela auto-sequência (passo 3): quando não há ticket
   ativo e existe `Todo` elegível. A esteira se auto-inicia — **não** espera gate humano de
   entrada. A saída (`→ Done`) continua sendo gate humano.

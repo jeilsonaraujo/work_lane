@@ -13,10 +13,14 @@ const { EMBED_DIM } = require('../db');
  * instalada, a 1ª chamada a `embed()` lança um erro claro, mas `npm install`
  * e `npm test` continuam funcionando.
  *
- * Modelo default: bge-small multilíngue, dimensão === EMBED_DIM (384).
+ * Modelo default: `paraphrase-multilingual-MiniLM-L12-v2` (multilíngue, inclui
+ * PT), dimensão === EMBED_DIM (384). É um modelo SIMÉTRICO: query e passagem
+ * usam o mesmo encoding, então NÃO precisa de prefixos `query:`/`passage:` (ao
+ * contrário dos modelos da família e5). Por isso a API `embed(texts)` continua
+ * indistinta entre consulta e documento.
  */
 function createTransformersProvider(opts = {}) {
-  const modelId = opts.model || 'Xenova/bge-small-en-v1.5';
+  const modelId = opts.model || 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
   let extractorPromise = null;
 
   async function getExtractor() {

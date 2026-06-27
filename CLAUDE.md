@@ -9,14 +9,16 @@ você projeta o sistema (a esteira) que faz isso.
 
 ## Como funciona
 
-- **Board**: projeto **Mobile App** no Linear (workspace `dimenso`, time `Dimenso`/`DIM`).
-- **Estações**: o status `In Progress` + um label do grupo `stage` dizem em que estação o ticket está.
+- **Board**: projeto **Auto Lane** no Linear (time `Lane`/`DIM`). Identifique **por ID** —
+  os nomes podem mudar (ver IDs abaixo).
+- **Colunas (status)**: `Todo` → `In Progress` → `To Review` → `Done` (+ `Backlog`, `Canceled`).
+- **Estações**: dentro de `In Progress`, um label do grupo `stage` diz a sub-estação (understand/execution/review/blocked).
 - **Driver**: o skill `/esteira` faz UMA varredura. `/loop /esteira` roda em loop (heartbeat).
-- **Gate humano**: só a **saída** (`stage:sign-off` → `Done`). A entrada é automática.
+- **Gate humano**: só a **saída** (`To Review` → `Done`). A entrada é automática.
 - **Auto-sequência (pull):** a esteira é WIP=1 e **se mantém ocupada**. Sempre que não há
-  ticket ativo e existe um `Todo` elegível (todos os `blockedBy` em `Done`), ela puxa sozinha
-  o próximo — **sem** esperar gate humano de entrada. Tickets em `sign-off`/`blocked` esperam
-  humano mas não ocupam a vaga. Detalhe no skill `/esteira`.
+  ticket ativo e existe um `Todo` elegível (todos os `blockedBy` já **integrados** = em
+  `To Review` ou `Done`), ela puxa sozinha o próximo — **sem** esperar gate humano de entrada.
+  Tickets em `To Review`/`blocked` esperam humano mas não ocupam a vaga. Detalhe no skill `/esteira`.
 
 ## Máquina de estados
 
@@ -26,7 +28,7 @@ ou errado nunca causa regressão/retrabalho. "Sem label" ≠ "novo"; novo = sem 
 
 Estágio derivado (mais recente → mais antigo):
 ```
-Review APPROVED        → sign-off   (gate humano)
+Review APPROVED        → integra + move p/ status `To Review` (gate humano)
 Review REJECTED (<3)   → execution  | (>=3) → blocked
 Work Log SUCCESS       → review
 Work Log FAILED        → blocked
@@ -35,19 +37,19 @@ nenhum artefato        → understand (entrada)
 ```
 
 Fluxo: `Todo ─(auto)─► In Progress` → understand → execution → review →
-(APPROVED) sign-off ─(humano)─► `Done`. Entrada automática (auto-sequência); gate humano só na saída.
+(APPROVED, auto: merge + status) `To Review` ─(humano)─► `Done`. Entrada automática; gate humano só na saída.
 
 Tentativas = nº de comentários `## 🔍 Review` REJECTED. Limite: 3 → `blocked`.
 **Base de branch para review/merge: `production`.** Executor commita em `esteira/<TICKET-ID>`.
 
 | Evento | Ação da esteira |
 |---|---|
-| Review APPROVED (→ `sign-off`) | **auto:** merge `esteira/<TICKET-ID>` → `production` (idempotente); ticket fica em `sign-off` p/ validação assíncrona. A fila **não** espera você. |
-| você move `sign-off` → `Done` | só fecha o ticket (o merge já ocorreu) |
-| você move um ticket → `Todo` (achou problema) | kick-back: requer **reverter o merge** + invalidar os artefatos do ticket (mover status não basta — artefato é a verdade). *A refinar.* |
+| Review APPROVED | **auto:** merge `esteira/<TICKET-ID>` → `production` (idempotente) **e move o ticket p/ `To Review`**. A fila **não** espera você. |
+| você move `To Review` → `Done` | só fecha o ticket (o merge já ocorreu) |
+| você move um ticket → `Todo` (reprovou) | kick-back: requer **reverter o merge** + invalidar os artefatos do ticket (mover status não basta — artefato é a verdade). *A refinar.* |
 
 **Autonomia & WIP=1:** a esteira roda o épico inteiro sozinha, empilhando os tickets em
-`sign-off` p/ você validar quando quiser. Ela só para por **bloqueio real** (`blocked`) ou
+`To Review` p/ você validar quando quiser. Ela só para por **bloqueio real** (`blocked`) ou
 por não haver `Todo` elegível. Invariante: **uma única task ativa por vez**.
 
 ## Handoffs (artefatos como comentários no ticket)
@@ -72,26 +74,53 @@ O driver usa a KB em dois momentos por ticket (read + write):
 > CLIs `kb/recall.mjs` e `kb/ingest.mjs` são a superfície que o driver chama (DIM-17).
 > Enquanto o wiring não chega, a esteira roda só sobre o Linear (como a v1).
 
-## IDs do Linear (coordenadas da esteira)
+## IDs do Linear (coordenadas da esteira) — **sempre use ID, não nome**
 
-- Team Dimenso: `3c0058ed-759f-4678-b219-4d34d0f533d7`
-- Project Mobile App: `9a2f315c-8def-4698-ba9a-8d0a680cda13`
+- Team (atual: "Lane", key DIM): `3c0058ed-759f-4678-b219-4d34d0f533d7`
+- Project (atual: "Auto Lane"): `9a2f315c-8def-4698-ba9a-8d0a680cda13`
 - Épico v3: **DIM-14**
 
-Status:
+Status (⚠️ "To Review" reusou o ID do antigo "Done"; "Done" agora é um ID novo):
 - Todo: `c7b52570-af37-4d8e-abd3-95d927cae20c`
 - In Progress: `e26d59a8-f02e-4959-ae24-ee57e81f4534`
-- Done: `8f89ea97-e4c4-4625-a29a-56aab536363f`
+- **To Review: `8f89ea97-e4c4-4625-a29a-56aab536363f`** (era o ID do antigo "Done")
+- **Done (novo): `be50bf53-88ac-4021-8bdf-774695cff007`**
 - Canceled: `74f37c47-98d8-47a8-a7e7-f7936f4bc207`
 
-Labels (grupo `stage` = `9e921002-79e5-4435-92af-b2f42025b724`):
+Labels (grupo `stage` = `9e921002-79e5-4435-92af-b2f42025b724`) — sub-estações de `In Progress`:
 - stage:understand: `c1e0dfb5-423f-49c5-915b-686c025b1dd7`
 - stage:execution: `58c3331f-3539-4e5b-b13f-16a9601aea0b`
 - stage:review: `e948cf81-3414-4c55-a62d-c7c9192e5db7`
-- stage:sign-off: `b862a7e9-0150-4159-8998-3d70eff5555b`
 - stage:blocked: `649682c6-fec8-400b-8760-5453ea25eaae`
+- *(stage:sign-off `b862a7e9-0150-4159-8998-3d70eff5555b` — **deprecado**: substituído pelo status `To Review`.)*
 
 ## Como rodar
 
+**1. Preparar a memória (`kb/`) — uma vez:**
+
+```bash
+cd kb && npm install            # better-sqlite3 + sqlite-vec (uma vez)
+node seed.mjs                    # popula kb.db com os docs do repo (provider real)
+node seed.mjs --fake           # ...ou offline (provider fake, sem baixar modelo)
+```
+
+`seed.mjs` cria/popula o `kb.db` (gitignored) **ancorado na raiz do repo** (default
+resolvido pelo próprio script, independente do CWD) — o MESMO arquivo que recall/ingest
+usam por padrão (passo 3). Idempotente.
+
+**2. Rodar a esteira:**
+
 - Uma passada: `/esteira`
 - Em loop: `/loop /esteira` (sem intervalo = auto-ritmado) ou `/loop 15m /esteira`
+
+**3. Recall + ingest no MESMO `kb.db` default.** O driver chama `kb/recall.mjs` (READ →
+injeta `## 📚 Memória relevante` no prompt) e `kb/ingest.mjs` (WRITE) **sem** `--db`:
+ambos resolvem `kb.db` **ancorado na raiz do repo** (independente do CWD). Não passe
+`--db` (ver `d.0`/`d.1` no SKILL).
+
+**Smoke (evidência offline de recall + ingest):**
+
+```bash
+cd kb && KB_FAKE_EMBEDDINGS=1 node e2e_smoke.mjs   # bloco de memória + antes/depois
+cd kb && KB_FAKE_EMBEDDINGS=1 npm test             # suíte completa, offline
+```
