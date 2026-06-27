@@ -16,14 +16,14 @@ function makeRunner(handler) {
 
 test('isAncestor: true when merge-base --is-ancestor succeeds', () => {
   const run = makeRunner(() => '');
-  assert.equal(isAncestor('esteira/WLN-1', 'production', run), true);
+  assert.equal(isAncestor('WLN-1', 'production', run), true);
 });
 
 test('isAncestor: false when the runner throws', () => {
   const run = makeRunner(() => {
     throw new Error('not an ancestor (exit 1)');
   });
-  assert.equal(isAncestor('esteira/WLN-1', 'production', run), false);
+  assert.equal(isAncestor('WLN-1', 'production', run), false);
 });
 
 test('merge: already an ancestor → no checkout/merge, merged:false', () => {
@@ -31,10 +31,10 @@ test('merge: already an ancestor → no checkout/merge, merged:false', () => {
     if (args[0] === 'merge-base') return ''; // is-ancestor succeeds → already merged
     throw new Error(`unexpected git call: ${args.join(' ')}`);
   });
-  const r = merge('esteira/WLN-1', 'production', run);
+  const r = merge('WLN-1', 'production', run);
   assert.deepEqual(r, { ok: true, merged: false, reason: 'already an ancestor' });
   // Guard: only the is-ancestor check ran.
-  assert.deepEqual(run.calls, ['merge-base --is-ancestor esteira/WLN-1 production']);
+  assert.deepEqual(run.calls, ['merge-base --is-ancestor WLN-1 production']);
 });
 
 test('merge: clean merge when not yet an ancestor → merged:true', () => {
@@ -42,7 +42,7 @@ test('merge: clean merge when not yet an ancestor → merged:true', () => {
     if (args[0] === 'merge-base') throw new Error('not ancestor'); // needs merging
     return ''; // checkout + merge succeed
   });
-  const r = merge('esteira/WLN-2', 'production', run);
+  const r = merge('WLN-2', 'production', run);
   assert.equal(r.ok, true);
   assert.equal(r.merged, true);
   assert.ok(run.calls.some((c) => c.startsWith('checkout production')));
@@ -57,7 +57,7 @@ test('merge: conflict → blocked signal + merge --abort, no auto-resolve', () =
     if (args[0] === 'merge' && args[1] === '--abort') return '';
     return '';
   });
-  const r = merge('esteira/WLN-3', 'production', run);
+  const r = merge('WLN-3', 'production', run);
   assert.equal(r.ok, false);
   assert.equal(r.blocked, true);
   assert.match(r.reason, /conflict/i);
@@ -66,7 +66,7 @@ test('merge: conflict → blocked signal + merge --abort, no auto-resolve', () =
 
 test('cleanup: prunes worktree and deletes the branch', () => {
   const run = makeRunner(() => '');
-  const r = cleanup('esteira/WLN-4', { worktree: '/tmp/wt', run });
+  const r = cleanup('WLN-4', { worktree: '/tmp/wt', run });
   assert.equal(r.ok, true);
   assert.ok(run.calls.some((c) => c.startsWith('worktree remove')));
   assert.ok(run.calls.some((c) => c.startsWith('branch -d')));
@@ -77,7 +77,7 @@ test('cleanup: collects errors but does not throw', () => {
     if (args[0] === 'branch') throw new Error('branch not fully merged');
     return '';
   });
-  const r = cleanup('esteira/WLN-5', { run });
+  const r = cleanup('WLN-5', { run });
   assert.equal(r.ok, false);
   assert.equal(r.errors.length, 1);
   assert.match(r.errors[0], /branch -d/);

@@ -13,27 +13,58 @@
 // The d.0.6 format gate is preserved: validation lives in post.mjs, which refuses to
 // comment/ingest a malformed artifact, so derivation never sees a bad field.
 
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { post as defaultPost } from './post.mjs';
-import { merge as defaultMerge } from './merge.mjs';
+import { merge as defaultMerge, cleanup as defaultCleanup } from './merge.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..');
 
 // Headless worker timeout (ms). A station run (recall + role + artifact) can take a
 // while; default mirrors the lock TTL (30 min). Override via LANE_CLAUDE_TIMEOUT_MS.
 export const DEFAULT_TIMEOUT_MS = Number(process.env.LANE_CLAUDE_TIMEOUT_MS) || 30 * 60 * 1000;
 
-// active.type → { cmd (the /command), station (validate/post + KB kind key) }.
+// Injectable git runner for worktree management (real by default; tests stub it).
+export function defaultGit(args) {
+  return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' });
+}
+
+// Create-or-reuse the executor's ISOLATED worktree, branch `<identifier>` off production.
+// The executor commits there so its `git checkout -b` NEVER moves the main repo's HEAD
+// (which must stay on production — a sweep that died mid-execution used to strand the
+// whole repo on the feature branch). Returns the worktree path, or null on failure.
+export function ensureExecWorktree({ identifier, git = defaultGit, log = () => {} }) {
+  const wt = path.join(REPO_ROOT, '.claude', 'worktrees', `lane-exec-${identifier}`);
+  try { git(['worktree', 'remove', '--force', wt]); } catch { /* no stale worktree */ }
+  try {
+    git(['worktree', 'add', wt, identifier]); // re-entry: reuse the existing branch
+  } catch {
+    try {
+      git(['worktree', 'add', wt, '-b', identifier, 'production']); // first run: new branch
+    } catch (e) {
+      log(`worktree add failed for ${identifier}: ${e && e.message ? e.message : e}`);
+      return null;
+    }
+  }
+  return wt;
+}
+
+// active.type → { cmd (the /command), station (validate/post + KB kind key), label
+// (the `stage:*` mirror set on the ticket when the artifact posts) }.
 // Note the asymmetry: the `execution` stage is run by the `/execute` command.
 const STATION = {
-  understand: { cmd: 'understand', station: 'understand' },
-  execution: { cmd: 'execute', station: 'execution' },
-  review: { cmd: 'review', station: 'review' },
+  understand: { cmd: 'understand', station: 'understand', label: 'stage:understand' },
+  execution: { cmd: 'execute', station: 'execution', label: 'stage:execution' },
+  review: { cmd: 'review', station: 'review', label: 'stage:review' },
 };
 
 // Default headless runner: `claude -p "/<cmd> wln=<num>"`, capturing stdout (the worker
 // prints ONLY the artifact — the contract of .claude/commands/*.md). Returns the raw
 // spawnSync result ({ status, signal, stdout, stderr, error }).
-export function defaultRunClaude({ cmd, num, timeout = DEFAULT_TIMEOUT_MS }) {
-  return spawnSync('claude', ['-p', `/${cmd} wln=${num}`], { encoding: 'utf8', timeout });
+export function defaultRunClaude({ cmd, num, timeout = DEFAULT_TIMEOUT_MS, cwd = REPO_ROOT }) {
+  return spawnSync('claude', ['-p', `/${cmd} wln=${num}`], { encoding: 'utf8', timeout, cwd });
 }
 
 // A worker run "failed" when the process errored, was killed (signal), or exited non-zero.
@@ -47,8 +78,8 @@ function workerFailed(res) {
 
 // Dispatch one station worker, then post its artifact. Returns the post result (or
 // undefined on a worker failure). Never throws — failures are logged and swallowed.
-async function runStation({ cmd, station, ticket, client, runClaude, post, log, stateId, labelId }) {
-  const res = runClaude({ cmd, num: ticket.number });
+async function runStation({ cmd, station, ticket, client, runClaude, post, log, stateId, labelId, cwd }) {
+  const res = runClaude({ cmd, num: ticket.number, cwd });
   const fail = workerFailed(res);
   if (fail) {
     log(`/${cmd} wln=${ticket.number} (${ticket.identifier}) ${fail} — skipping`);
@@ -71,18 +102,24 @@ async function runStation({ cmd, station, ticket, client, runClaude, post, log, 
 
 // active.type === 'merge': NO worker — idempotent git merge, then move To Review +
 // stage:done (forward-only on conflict: just log, leave for a human).
-async function dispatchMerge({ ticket, client, statuses, labels, merge, log }) {
-  const branch = `esteira/${ticket.identifier}`;
+// Returns true iff the slot advanced (merged OR already an ancestor → To Review);
+// a conflict (blocked) returns false so the drain stops and leaves it for a human.
+async function dispatchMerge({ ticket, client, statuses, labels, merge, cleanup, log }) {
+  const branch = ticket.identifier;
   const r = merge(branch);
   if (r.ok && !r.blocked) {
     await client.updateIssue(ticket.id, {
       stateId: statuses['To Review'],
       labelIds: labels['stage:done'] ? [labels['stage:done']] : undefined,
     });
+    // Tidy up: prune the (now-integrated) branch + any leftover isolation worktree so
+    // they don't accumulate. Best-effort — cleanup never throws into the merge result.
+    try { cleanup(branch); } catch { /* best-effort */ }
     log(`merged ${branch} → production; ${ticket.identifier} → To Review (stage:done)`);
-  } else {
-    log(`merge ${branch} blocked: ${r.reason} — forward-only, left for a human`);
+    return true;
   }
+  log(`merge ${branch} blocked: ${r.reason} — forward-only, left for a human`);
+  return false;
 }
 
 export async function dispatch({
@@ -93,21 +130,53 @@ export async function dispatch({
   runClaude = defaultRunClaude,
   post = defaultPost,
   merge = defaultMerge,
+  cleanup = defaultCleanup,
+  git = defaultGit,
   log = (msg) => process.stderr.write(`lane dispatch: ${msg}\n`),
 } = {}) {
   const active = (plan && plan.active) || { type: 'idle' };
   const reconcile = (plan && plan.reconcile) || [];
   const pretriage = (plan && plan.pretriage) || [];
 
+  // Did the WIP=1 active slot advance this dispatch? Drives the drain loop's stop
+  // condition (run.mjs). false for idle/unknown, a worker failure, a rejected (invalid)
+  // artifact, a merge conflict, or any exception — so the drain stops, never throws.
+  let activeAdvanced = false;
+
   // 1. ACTIVE (WIP=1) — dispatched first; a failure here must NOT abort the sweep.
   try {
     if (active.type === 'idle') {
       // nothing to run on the active slot this sweep.
     } else if (active.type === 'merge') {
-      await dispatchMerge({ ticket: active.ticket, client, statuses, labels, merge, log });
+      activeAdvanced = await dispatchMerge({ ticket: active.ticket, client, statuses, labels, merge, cleanup, log });
     } else if (STATION[active.type]) {
-      const { cmd, station } = STATION[active.type];
-      await runStation({ cmd, station, ticket: active.ticket, client, runClaude, post, log });
+      const { cmd, station, label } = STATION[active.type];
+      // Reconcile the stage:* mirror as the artifact posts (the ticket stays In Progress,
+      // so no stateId). labels[label] may be undefined (label absent) → post leaves it.
+      const base = {
+        cmd, station, ticket: active.ticket, client, runClaude, post, log,
+        labelId: labels[label],
+      };
+      let r;
+      if (active.type === 'execution') {
+        // ISOLATION: the executor writes code + commits on `<ID>`. Run it in a dedicated
+        // worktree (cwd) so its branch checkout never moves the main repo's HEAD off
+        // production. Remove the worktree afterward (keep the branch for the merge step).
+        const wt = ensureExecWorktree({ identifier: active.ticket.identifier, git, log });
+        if (wt) {
+          try {
+            r = await runStation({ ...base, cwd: wt });
+          } finally {
+            try { git(['worktree', 'remove', '--force', wt]); } catch { /* best-effort */ }
+          }
+        }
+      } else {
+        // understand / review are read-only — run in the main repo, no worktree needed.
+        r = await runStation(base);
+      }
+      // The slot advanced only when the artifact actually posted (valid + accepted):
+      // a worker failure/timeout (r === undefined) or a rejected artifact (!r.ok) does not.
+      activeAdvanced = !!(r && r.ok);
     } else {
       log(`unknown active type "${active.type}" — skipping`);
     }
@@ -140,6 +209,7 @@ export async function dispatch({
         runClaude,
         post,
         log,
+        labelId: labels['stage:triage'],
       });
       if (r && r.ok && action.from === 'Todo') {
         await client.updateIssue(action.ticket.id, { stateId: statuses['Triage'] });
@@ -149,4 +219,6 @@ export async function dispatch({
       log(`pretriage ${action.ticket && action.ticket.identifier} threw: ${e && e.message ? e.message : e} — continuing`);
     }
   }
+
+  return { activeAdvanced };
 }

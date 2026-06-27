@@ -77,7 +77,7 @@ and the **result** (exit).
 > `In Progress` deriving `understand` runs the `understand` station.
 
 Attempts = number of `## 🔍 Review` REJECTED comments. Limit: 3 → `blocked`.
-**Branch base for review/merge: `production`.** The executor commits on `esteira/<TICKET-ID>`.
+**Branch base for review/merge: `production`.** The executor commits on `<TICKET-ID>`.
 The executor's isolation worktree branches from the **local HEAD of `production`** via
 `worktree.baseRef: "head"` in `.claude/settings.json` (the key only accepts `"fresh"` or
 `"head"`). Reason: there is no resolvable `origin/HEAD` and the integrated code lives only in
@@ -85,7 +85,7 @@ the local `production` — the default `"fresh"` would lose the already-merged t
 
 | Event | Lane action |
 |---|---|
-| Review APPROVED | **auto, in the same sweep:** merge `esteira/<TICKET-ID>` → `production` (idempotent), **move the ticket to `To Review`** and **set the green terminal label `stage:done`** (mutually exclusive in the `stage` group — replaces the stale `stage:*`). The queue does **not** wait for you. |
+| Review APPROVED | **auto, in the same sweep:** merge `<TICKET-ID>` → `production` (idempotent), **move the ticket to `To Review`** and **set the green terminal label `stage:done`** (mutually exclusive in the `stage` group — replaces the stale `stage:*`). The queue does **not** wait for you. |
 | you move `To Review` → `Done` | just closes the ticket (the merge already happened) |
 | problem found after merge | **forward-only:** a merged ticket is terminal — the lane never reopens nor reverts it. File a **NEW linked ticket** (regression/bugfix) that flows through the lane normally. An emergency revert of a bad merge is a rare, **manual, human action** — not automated by the lane. |
 
@@ -217,12 +217,23 @@ modules and talks to Linear over the GraphQL API:
   (a `Todo` that already has a Pre-Triage). `Triage` is a **pure signal** (no action). Ordering:
   epic-continuity → priority → number.
 - `lane/linear.mjs` — thin GraphQL client (global `fetch`, `LINEAR_API_KEY` from env).
-  `lane/merge.mjs` — idempotent `esteira/<ID>` → `production` merge (is-ancestor guard;
+  `lane/merge.mjs` — idempotent `<ID>` → `production` merge (is-ancestor guard;
   conflict → blocked signal, never auto-resolved). `lane/board.mjs` / `lane/post.mjs` — glue.
 - `lane/run.mjs --dry-run` — derives the next action from a board fixture and prints it with
-  **zero side effects** (offline; no Linear/git writes). `scripts/lane-tick.sh` — `flock -n`
-  single-instance runner that invokes the sweep and dispatches the station workers in
+  **zero side effects** (offline; no Linear/git writes). The **live** path is a **drain loop**
+  (`drain()`, `DRAIN_CAP=12`): it repeats `buildBoard → decide → dispatch` **while the active
+  slot advances**, chaining `understand → execution → review → merge` in a single `flock`-held
+  invocation and stopping at `idle`, on an unchanged progress signature (`ticket:stage`), or at
+  the cap. Each iteration re-reads Linear and re-derives from artifacts, so `stateless-per-sweep`
+  holds; it only removes the artificial cron-tick gap between stations. Pre-triage/reconcile run
+  **once** (iteration 0) so `PRETRIAGE_CAP=3` stays per-sweep. `dispatch()` returns
+  `{ activeAdvanced }` as the loop's stop signal. `scripts/lane-tick.sh` — `flock -n`
+  single-instance runner that invokes the drain and dispatches the station workers in
   `.claude/commands/` (`/triage`, `/understand`, `/execute`, `/review`) via `claude -p`.
+  With the drain self-chaining the stations, the **cron is now a resume heartbeat** (wakes the
+  lane after a mid-drain death — credits/rate-limit, killed `claude -p`, OOM, reboot — or when a
+  human opens a gate), not the engine; the happy path is interval-independent, so **~10min** is
+  recommended (the live crontab interval is a manual `crontab -e` step, outside the repo).
 - Tests: `cd lane && node --test` (pure-logic coverage, fully offline, no extra deps).
 - Config: set `LINEAR_API_KEY` in `.env` (see `.env.example`). The code driver is **not** the
   default — the prose `/loop /lane` over the MCP remains the supported path; the live station

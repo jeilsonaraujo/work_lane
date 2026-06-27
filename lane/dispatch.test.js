@@ -4,8 +4,13 @@
 // gate is exercised end-to-end) with the ingest replaced by a no-op.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dispatch } from './dispatch.mjs';
+import { dispatch as rawDispatch } from './dispatch.mjs';
 import { post as realPost } from './post.mjs';
+
+// Default-inject SAFE stubs for the impure git/cleanup deps so no test ever shells out to
+// real git (worktree add/remove, branch -d). A test that asserts on them passes its own,
+// which overrides via the trailing spread.
+const dispatch = (opts) => rawDispatch({ git: () => '', cleanup: () => ({ ok: true, errors: [] }), ...opts });
 
 // Canonical artifacts (one per station), valid against validate.mjs.
 const ART = {
@@ -51,6 +56,21 @@ function makeRunClaude(overrides = {}) {
 const ingestStub = () => ({ ok: true });
 const post = (args) => realPost({ ...args, ingest: ingestStub });
 
+// git stub for worktree management (execution isolation): records args, succeeds.
+function makeGit() {
+  const calls = [];
+  const fn = (args) => { calls.push(args); return ''; };
+  fn.calls = calls;
+  return fn;
+}
+// cleanup stub (post-merge branch/worktree tidy): records branches, never throws.
+function makeCleanup() {
+  const calls = [];
+  const fn = (branch) => { calls.push(branch); return { ok: true, errors: [] }; };
+  fn.calls = calls;
+  return fn;
+}
+
 const statuses = { Todo: 's-todo', Triage: 's-triage', 'In Progress': 's-prog', 'To Review': 's-rev', Done: 's-done' };
 const labels = { 'stage:done': 'l-done' };
 
@@ -75,7 +95,20 @@ test('active understand → /understand, posts Context Spec', async () => {
   assert.deepEqual(runClaude.calls, [{ cmd: 'understand', num: 10 }]);
   assert.equal(client.comments.length, 1);
   assert.match(client.comments[0].body, /## 🧭 Context Spec/);
-  assert.equal(client.updates.length, 0); // no status/label change for understand
+  assert.equal(client.updates.length, 0); // stage:understand absent in fixture → label left
+});
+
+// Regression: the active station must reconcile its stage:* mirror when the label
+// resolves. Previously runStation was called WITHOUT labelId, so the label was never set
+// (a ticket would sit in In Progress with no stage label).
+test('active understand sets the stage:understand label when resolved', async () => {
+  const client = makeClient();
+  const runClaude = makeRunClaude();
+  await dispatch({
+    plan: { active: { type: 'understand', ticket: ticket(10) }, reconcile: [], pretriage: [] },
+    client, statuses, labels: { 'stage:understand': 'l-und' }, runClaude, post,
+  });
+  assert.deepEqual(client.updates, [{ id: 'iss-10', input: { labelIds: ['l-und'] } }]);
 });
 
 test('active execution → /execute (command name asymmetry)', async () => {
@@ -83,10 +116,50 @@ test('active execution → /execute (command name asymmetry)', async () => {
   const runClaude = makeRunClaude();
   await dispatch({
     plan: { active: { type: 'execution', ticket: ticket(11) }, reconcile: [], pretriage: [] },
-    client, statuses, labels, runClaude, post,
+    client, statuses, labels, runClaude, post, git: makeGit(),
   });
   assert.deepEqual(runClaude.calls, [{ cmd: 'execute', num: 11 }]);
   assert.match(client.comments[0].body, /## 🔧 Work Log/);
+});
+
+// Isolation: execution must run in a dedicated worktree (cwd) so the executor's branch
+// checkout never moves the main repo HEAD. The worktree is created before and removed
+// after the run, and runClaude receives its path as cwd.
+test('active execution runs in an isolated worktree (add → cwd → remove)', async () => {
+  const client = makeClient();
+  const cwds = [];
+  const runClaude = (args) => { cwds.push(args.cwd); return { status: 0, signal: null, stdout: ART.execution, stderr: '', error: null }; };
+  const git = makeGit();
+  await dispatch({
+    plan: { active: { type: 'execution', ticket: ticket(11) }, reconcile: [], pretriage: [] },
+    client, statuses, labels, runClaude, post, git,
+  });
+  // worktree created (add) then removed (remove --force), with a non-empty cwd in between.
+  assert.ok(git.calls.some((a) => a[0] === 'worktree' && a[1] === 'add'), 'worktree add');
+  assert.ok(git.calls.some((a) => a[0] === 'worktree' && a[1] === 'remove'), 'worktree remove');
+  assert.ok(cwds[0] && cwds[0].includes('lane-exec-WLN-11'), 'runClaude got the worktree cwd');
+});
+
+test('execution worktree is removed even when the worker fails', async () => {
+  const client = makeClient();
+  const runClaude = () => ({ status: 1, signal: null, stdout: '', stderr: 'boom', error: null });
+  const git = makeGit();
+  const log = logs();
+  await dispatch({
+    plan: { active: { type: 'execution', ticket: ticket(11) }, reconcile: [], pretriage: [] },
+    client, statuses, labels, runClaude, post, git, log,
+  });
+  assert.ok(git.calls.some((a) => a[0] === 'worktree' && a[1] === 'remove'), 'worktree removed in finally');
+});
+
+// understand / review are read-only — they must NOT spin up a worktree.
+test('understand does not create a worktree (read-only)', async () => {
+  const git = makeGit();
+  await dispatch({
+    plan: { active: { type: 'understand', ticket: ticket(10) }, reconcile: [], pretriage: [] },
+    client: makeClient(), statuses, labels, runClaude: makeRunClaude(), post, git,
+  });
+  assert.equal(git.calls.length, 0);
 });
 
 test('active review → /review', async () => {
@@ -124,15 +197,35 @@ test('active merge → merge() + updateIssue(To Review + stage:done), no worker'
     client, statuses, labels, runClaude, post, merge,
   });
   assert.equal(runClaude.calls.length, 0);
-  assert.deepEqual(mergeCalls, ['esteira/WLN-13']);
+  assert.deepEqual(mergeCalls, ['WLN-13']);
   assert.equal(client.updates.length, 1);
   assert.deepEqual(client.updates[0], { id: 'iss-13', input: { stateId: 's-rev', labelIds: ['l-done'] } });
+});
+
+test('successful merge tidies up the branch via cleanup()', async () => {
+  const cleanup = makeCleanup();
+  await dispatch({
+    plan: { active: { type: 'merge', ticket: ticket(13) }, reconcile: [], pretriage: [] },
+    client: makeClient(), statuses, labels, runClaude: makeRunClaude(),
+    post, merge: () => ({ ok: true, merged: true }), cleanup,
+  });
+  assert.deepEqual(cleanup.calls, ['WLN-13']);
+});
+
+test('blocked merge does NOT run cleanup (branch kept for the human)', async () => {
+  const cleanup = makeCleanup();
+  await dispatch({
+    plan: { active: { type: 'merge', ticket: ticket(14) }, reconcile: [], pretriage: [] },
+    client: makeClient(), statuses, labels, runClaude: makeRunClaude(),
+    post, merge: () => ({ ok: false, blocked: true, reason: 'conflict' }), cleanup,
+  });
+  assert.equal(cleanup.calls.length, 0);
 });
 
 test('active merge conflict (blocked) → no move, logged', async () => {
   const client = makeClient();
   const runClaude = makeRunClaude();
-  const merge = () => ({ ok: false, blocked: true, reason: 'merge conflict on esteira/WLN-14' });
+  const merge = () => ({ ok: false, blocked: true, reason: 'merge conflict on WLN-14' });
   const log = logs();
   await dispatch({
     plan: { active: { type: 'merge', ticket: ticket(14) }, reconcile: [], pretriage: [] },
@@ -256,6 +349,98 @@ test('runClaude killed by SIGTERM (timeout) → logged, no throw', async () => {
   });
   assert.equal(client.comments.length, 0);
   assert.ok(log.lines.some((l) => /SIGTERM/.test(l)));
+});
+
+// --- activeAdvanced return signal (drives the run.mjs drain loop) ---------------
+
+test('returns activeAdvanced=false for idle', async () => {
+  const r = await dispatch({
+    plan: { active: { type: 'idle' }, reconcile: [], pretriage: [] },
+    client: makeClient(), statuses, labels, runClaude: makeRunClaude(), post,
+  });
+  assert.deepEqual(r, { activeAdvanced: false });
+});
+
+test('returns activeAdvanced=true when an active station posts a valid artifact', async () => {
+  const r = await dispatch({
+    plan: { active: { type: 'execution', ticket: ticket(11) }, reconcile: [], pretriage: [] },
+    client: makeClient(), statuses, labels, runClaude: makeRunClaude(), post,
+  });
+  assert.equal(r.activeAdvanced, true);
+});
+
+test('returns activeAdvanced=false when the worker exits non-zero', async () => {
+  const runClaude = makeRunClaude({ review: { status: 1, signal: null, stdout: '', stderr: 'boom', error: null } });
+  const r = await dispatch({
+    plan: { active: { type: 'review', ticket: ticket(60) }, reconcile: [], pretriage: [] },
+    client: makeClient(), statuses, labels, runClaude, post, log: logs(),
+  });
+  assert.equal(r.activeAdvanced, false);
+});
+
+test('returns activeAdvanced=false when the worker is killed (timeout)', async () => {
+  const runClaude = makeRunClaude({ execute: { status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: null } });
+  const r = await dispatch({
+    plan: { active: { type: 'execution', ticket: ticket(70) }, reconcile: [], pretriage: [] },
+    client: makeClient(), statuses, labels, runClaude, post, log: logs(),
+  });
+  assert.equal(r.activeAdvanced, false);
+});
+
+test('returns activeAdvanced=false when the artifact is rejected by the validation gate', async () => {
+  const runClaude = makeRunClaude({ understand: { status: 0, signal: null, stdout: 'garbage, no header', stderr: '', error: null } });
+  const r = await dispatch({
+    plan: { active: { type: 'understand', ticket: ticket(50) }, reconcile: [], pretriage: [] },
+    client: makeClient(), statuses, labels, runClaude, post, log: logs(),
+  });
+  assert.equal(r.activeAdvanced, false);
+});
+
+test('returns activeAdvanced=true on a successful merge', async () => {
+  const merge = () => ({ ok: true, merged: true });
+  const r = await dispatch({
+    plan: { active: { type: 'merge', ticket: ticket(13) }, reconcile: [], pretriage: [] },
+    client: makeClient(), statuses, labels, runClaude: makeRunClaude(), post, merge,
+  });
+  assert.equal(r.activeAdvanced, true);
+});
+
+test('returns activeAdvanced=true when the branch is already an ancestor (idempotent merge)', async () => {
+  const merge = () => ({ ok: true, merged: false, reason: 'already an ancestor' });
+  const r = await dispatch({
+    plan: { active: { type: 'merge', ticket: ticket(15) }, reconcile: [], pretriage: [] },
+    client: makeClient(), statuses, labels, runClaude: makeRunClaude(), post, merge,
+  });
+  assert.equal(r.activeAdvanced, true);
+});
+
+test('returns activeAdvanced=false on a merge conflict (blocked)', async () => {
+  const merge = () => ({ ok: false, blocked: true, reason: 'merge conflict on WLN-14' });
+  const r = await dispatch({
+    plan: { active: { type: 'merge', ticket: ticket(14) }, reconcile: [], pretriage: [] },
+    client: makeClient(), statuses, labels, runClaude: makeRunClaude(), post, merge, log: logs(),
+  });
+  assert.equal(r.activeAdvanced, false);
+});
+
+test('returns activeAdvanced=false for an unknown active type', async () => {
+  const r = await dispatch({
+    plan: { active: { type: 'bogus', ticket: ticket(99) }, reconcile: [], pretriage: [] },
+    client: makeClient(), statuses, labels, runClaude: makeRunClaude(), post, log: logs(),
+  });
+  assert.equal(r.activeAdvanced, false);
+});
+
+test('returns activeAdvanced=false when the active station throws', async () => {
+  const throwingClient = {
+    createComment: async () => { throw new Error('network down'); },
+    updateIssue: async (id, input) => ({ id }),
+  };
+  const r = await dispatch({
+    plan: { active: { type: 'understand', ticket: ticket(80) }, reconcile: [], pretriage: [] },
+    client: throwingClient, statuses, labels, runClaude: makeRunClaude(), post, log: logs(),
+  });
+  assert.equal(r.activeAdvanced, false);
 });
 
 test('client.createComment throwing in active does NOT abort reconcile/pretriage', async () => {

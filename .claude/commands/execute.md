@@ -16,7 +16,10 @@ You are the **execution** station worker. Parse the ticket id from `$ARGUMENTS`
    Dedup by `ticket_id|chunk_index`, cap ~5 chunks. If recall errors or is empty,
    continue without the block.
 2. **Adopt the role** defined in `.claude/agents/executor.md`. Work in the
-   isolation worktree branched from `production` HEAD; commit on `esteira/WLN-<ID>`.
+   isolation worktree branched from `production` HEAD; commit on `WLN-<ID>`. Select the
+   branch **idempotently** so a re-dispatch tolerates a pre-existing `WLN-<ID>` branch with
+   partial commits: `git checkout WLN-<ID> 2>/dev/null || git checkout -b WLN-<ID>` (never
+   `-B`, which would discard partial work from an executor that died before posting its Work Log).
 3. Implement the Context Spec, add/update tests + docs, and run the tests until green.
 4. **Print ONLY the `## 🔧 Work Log` artifact to stdout.** It MUST contain exactly
    one `**Status:** SUCCESS|FAILED` line. The driver validates it (`lane/validate.mjs`)

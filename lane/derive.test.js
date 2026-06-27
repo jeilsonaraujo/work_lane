@@ -21,7 +21,7 @@ const spec = (blockers = '', createdAt = '2026-01-01T00:00:00Z') => ({
 });
 const worklog = (status, createdAt) => ({
   header: '## 🔧 Work Log',
-  body: `## 🔧 Work Log\n\n**Branch:** esteira/WLN-1\n**Status:** ${status}\n`,
+  body: `## 🔧 Work Log\n\n**Branch:** WLN-1\n**Status:** ${status}\n`,
   createdAt,
 });
 const review = (verdict, createdAt) => ({
@@ -68,6 +68,27 @@ test('rule 5: Context Spec with non-empty Blockers → blocked', () => {
   const r = derive([spec('ticket too ambiguous')]);
   assert.equal(r.stage, 'blocked');
   assert.match(r.reason, /blocker/i);
+});
+
+// Regression (WLN-58): a prose "None …" sentinel must NOT false-positive into blocked.
+// The agent wrote `**Blockers:** None that block implementation. Non-blocking note: …`,
+// which the old "any text → blocked" rule mis-read as a real block, stranding the ticket.
+test('rule 5: leading none-sentinel Blockers → execution (not blocked)', () => {
+  for (const none of [
+    'None that block implementation. Non-blocking note: bump the cron interval.',
+    'None',
+    'N/A',
+    'nenhum',
+    'nada que bloqueie',
+    '-',
+    '- none',
+  ]) {
+    assert.equal(derive([spec(none)]).stage, 'execution', `"${none}" should be execution`);
+  }
+});
+
+test('rule 5: a real blocker that merely starts with a dash bullet → blocked', () => {
+  assert.equal(derive([spec('- WLN-99 must merge first')]).stage, 'blocked');
 });
 
 test('rule 3: Work Log SUCCESS → review', () => {

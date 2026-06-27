@@ -21,6 +21,11 @@ import { decide } from './decide.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_FIXTURE = path.resolve(__dirname, 'fixtures', 'board.sample.json');
 
+// Drain backstop: the hard cap on stations chained in a single live invocation.
+// understand → execution → review → merge is 4; 12 leaves generous headroom while
+// bounding a pathological loop (the progress-signature guard normally stops first).
+export const DRAIN_CAP = 12;
+
 // A ticket has a SETTLED Pre-Triage when deriving its artifacts yields anything other
 // than `triage` (no artifact / fresh kick-back both re-derive `triage`).
 const hasPretriage = (artifacts) => derive(artifacts ?? []).stage !== 'triage';
@@ -72,6 +77,80 @@ export function dryRun(fixturePath = DEFAULT_FIXTURE) {
   };
 }
 
+// The inspectable JSON view of a composite plan (same shape printed before dispatch
+// since the single-action days) — emitted once per drain iteration so a live sweep
+// stays auditable in the logs.
+function livePlanView(plan) {
+  return {
+    mode: 'live',
+    plan: {
+      active: plan.active.ticket
+        ? { type: plan.active.type, ticket: plan.active.ticket.identifier }
+        : plan.active,
+      pretriage: plan.pretriage.map((a) => ({ type: a.type, ticket: a.ticket.identifier, from: a.from })),
+      reconcile: plan.reconcile.map((a) => ({ type: a.type, ticket: a.ticket.identifier })),
+    },
+  };
+}
+
+// Drain loop: repeat buildBoard → decide → dispatch WHILE the active slot advances,
+// inside a single flock-held invocation. Each iteration RE-READS Linear and RE-DERIVES
+// the stage from the freshly posted artifacts (stateless-per-sweep preserved) — it only
+// removes the artificial cron-tick gap between stations, draining understand → execution
+// → review → merge at once and stopping when the slot reaches idle.
+//
+// Pre-triage/reconcile run ONCE (iteration 0) so PRETRIAGE_CAP=3 stays per-sweep, not
+// per-iteration. All deps are injectable so the loop is unit-testable fully offline.
+export async function drain({
+  buildBoard,
+  decide: decideFn = decide,
+  dispatch,
+  client,
+  projectId,
+  statuses,
+  labels,
+  log = (msg) => process.stderr.write(`lane drain: ${msg}\n`),
+  cap = DRAIN_CAP,
+}) {
+  let prevSignature; // undefined sentinel — "no previous iteration yet".
+  let iterations = 0;
+  // Guard 3 (cap): the for-bound is the backstop against a pathological non-converging loop.
+  for (let i = 0; i < cap; i++) {
+    iterations = i + 1;
+    const board = await buildBoard({ client, projectId, statuses });
+    const plan = decideFn(board);
+    // Inspectable first: print the decided plan before dispatch mutates anything.
+    console.log(JSON.stringify(livePlanView(plan), null, 2));
+
+    // Progress signature of the active slot, BEFORE dispatch: ticket:stage (or null when idle).
+    const signature = board.inProgress
+      ? `${board.inProgress.ticket.identifier}:${board.inProgress.stage}`
+      : null;
+
+    // Guard 1 (progress signature): the active slot hasn't moved since the last iteration
+    // (e.g. a valid artifact posted but the derived stage is unchanged — a skipped/looping
+    // artifact). Stop rather than spin.
+    if (i > 0 && signature === prevSignature) {
+      log(`progress signature unchanged (${signature ?? 'idle'}) — stopping`);
+      break;
+    }
+    prevSignature = signature;
+
+    // Pre-triage/reconcile only on iteration 0; later iterations drain the active slot only.
+    const iterPlan = i === 0 ? plan : { ...plan, pretriage: [], reconcile: [] };
+    const { activeAdvanced } = await dispatch({ plan: iterPlan, client, statuses, labels });
+
+    // Guard 2 (advance signal): the active slot didn't advance — idle, worker failure/
+    // timeout, a rejected artifact, a merge conflict, or an unknown type. Nothing more to
+    // drain this invocation.
+    if (!activeAdvanced) {
+      log(`active slot did not advance — stopping after ${iterations} iteration(s)`);
+      break;
+    }
+  }
+  return { iterations };
+}
+
 async function main() {
   const { values } = parseArgs({
     options: {
@@ -86,7 +165,10 @@ async function main() {
     return;
   }
 
-  // Live mode (manual / scripts/lane-tick.sh): build the board, decide, print, dispatch.
+  // Live mode (manual / scripts/lane-tick.sh): resolve coordinates, then DRAIN the active
+  // slot — buildBoard → decide → dispatch repeated while the slot advances. The drain chains
+  // understand → execution → review → merge in one flock-held invocation, so the cron is now
+  // only a resilient resume heartbeat, not the engine that advances the epic tick-by-tick.
   const { createClient } = await import('./linear.mjs');
   const { buildBoard } = await import('./board.mjs');
   const { dispatch } = await import('./dispatch.mjs');
@@ -95,20 +177,7 @@ async function main() {
   const client = createClient();
   const statuses = await client.resolveStatuses(TEAM);
   const labels = await client.resolveLabels(TEAM);
-  const board = await buildBoard({ client, projectId: PROJECT, statuses });
-  const plan = decide(board);
-  // Inspectable first: print the decided action before dispatching it.
-  console.log(JSON.stringify({
-    mode: 'live',
-    plan: {
-      active: plan.active.ticket
-        ? { type: plan.active.type, ticket: plan.active.ticket.identifier }
-        : plan.active,
-      pretriage: plan.pretriage.map((a) => ({ type: a.type, ticket: a.ticket.identifier, from: a.from })),
-      reconcile: plan.reconcile.map((a) => ({ type: a.type, ticket: a.ticket.identifier })),
-    },
-  }, null, 2));
-  await dispatch({ plan, client, statuses, labels });
+  await drain({ buildBoard, decide, dispatch, client, projectId: PROJECT, statuses, labels });
 }
 
 // Only run when invoked directly (not when imported by tests).

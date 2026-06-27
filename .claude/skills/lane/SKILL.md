@@ -195,9 +195,9 @@ once before any post.
       step 0**; CLAUDE.md as fallback).
    c. If the stage is `blocked` → **skip** (it belongs to the human).
    c2. If the stage is `sign-off` (last Review **APPROVED**) → **integrate and finalize for you**:
-       - **Idempotent merge:** if `esteira/<TICKET-ID>` is still **not** an ancestor of
-         `production` (`git merge-base --is-ancestor esteira/<TICKET-ID> production` → false),
-         do the merge `esteira/<TICKET-ID>` → `production` **now**. If it already is an ancestor, nothing.
+       - **Idempotent merge:** if `<TICKET-ID>` is still **not** an ancestor of
+         `production` (`git merge-base --is-ancestor <TICKET-ID> production` → false),
+         do the merge `<TICKET-ID>` → `production` **now**. If it already is an ancestor, nothing.
        - **Conflict** without a safe resolution → mark `blocked` + a comment (becomes a human gate).
        - **Move the ticket to status `To Review`** (`save_issue state: "<id-To-Review>"` —
          **ID resolved in step 0**, CLAUDE.md as fallback) **and set the green terminal label
@@ -370,7 +370,7 @@ once before any post.
         `Triage → In Progress`.
       - If the recomputed stage is `sign-off` (you just posted an APPROVED Review)
         → **execute the procedure of step c2 inline, in this SAME
-        sweep**: idempotent merge of `esteira/<TICKET-ID>` → `production` (only if not yet
+        sweep**: idempotent merge of `<TICKET-ID>` → `production` (only if not yet
         an ancestor; conflict without a safe resolution → `blocked` + a comment) and move the
         ticket to status `To Review` (`save_issue state: "<id-To-Review>"`, ID resolved
         in step 0) **and set the green terminal label `stage:done`** in the same `save_issue`
@@ -489,7 +489,7 @@ once before any post.
 - **One driver at a time:** the sweep acquires `.claude/esteira.lock.d` (atomic mkdir, TTL 30min)
   at the start and releases it at the end; a 2nd concurrent driver aborts silently.
 - **Automatic integration + `To Review`:** when the review approves, the driver merges
-  `esteira/<TICKET-ID>` → `production` (idempotent, step c2) and **moves the ticket to `To Review`**.
+  `<TICKET-ID>` → `production` (idempotent, step c2) and **moves the ticket to `To Review`**.
   The lane **does not wait** for your validation to advance — it stacks the ready tickets in
   `To Review` and runs the next eligible one. It only stops when there is a `blocked` or no eligible `Todo`.
 - **Never** move to `Done` — that is the human exit gate. The lane stops at `To Review` (the merge already
@@ -538,7 +538,7 @@ needs to persist: every sweep is **stateless** (see Rules) and rebuilds what it 
 already stateless-per-sweep. All durable state is reconstructed every sweep from the only real
 stores: **Linear** (coordinates by name in step 0, the derived stage from artifacts in step 2a,
 the epic-continuity anchor as max-`updatedAt` `To Review`/`Done` ticket in step 3) and **git +
-disk** (`production`/`esteira/<TICKET-ID>` for the merge, the
+disk** (`production`/`<TICKET-ID>` for the merge, the
 `.claude/esteira.lock.d` lock). Derivation rules 1–8, the Verdict/Status/Blockers regexes, the
 lock/TTL and the recall/ingest best-effort behavior are all
 unchanged — only the **retention** of already-consumed text changes.

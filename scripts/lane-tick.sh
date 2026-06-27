@@ -6,9 +6,18 @@
 # SKILL's atomic-mkdir lock. A second overlapping invocation fails the flock and
 # exits 0 without touching Linear/git — preserving the WIP=1 / one-driver invariant.
 #
+# CRON = RESUME HEARTBEAT, not the engine. run.mjs now DRAINS the active slot in a
+# single invocation (buildBoard → decide → dispatch repeated while the slot advances —
+# understand → execution → review → merge chained at once, WLN-58). So the cron no longer
+# advances the epic one station per tick; it only wakes the lane back up after a drain died
+# mid-way (credits exhausted / rate-limit, `claude -p` killed, OOM, reboot) or when a human
+# opens a gate (Triage → In Progress, or a new Todo appears). The happy path is now
+# interval-independent, so the cron can be spaced out — **~10min recommended** (the live
+# crontab interval is an operational `crontab -e` edit, outside this repo).
+#
 # Usage:
 #   scripts/lane-tick.sh --dry-run      # offline, prints the derived action, no I/O
-#   scripts/lane-tick.sh                # live sweep (requires LINEAR_API_KEY)
+#   scripts/lane-tick.sh                # live drain (requires LINEAR_API_KEY)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,20 +58,38 @@ if [ "$DRY_RUN" -eq 0 ]; then
   trap 'rm -rf "$MKLOCK"' EXIT
 fi
 
-# Node is not on the default PATH in this environment — prepend it.
-export PATH="$HOME/.nvm/versions/node/v22.22.3/bin:$PATH"
+# cron/systemd run with a minimal PATH (/usr/bin:/bin) — prepend the dirs holding the
+# binaries this sweep needs: node (nvm) and the `claude` CLI (~/.local/bin), which the
+# live dispatch (claude -p) spawns. Without ~/.local/bin a live station dispatch would
+# fail ENOENT under cron even though it works in an interactive shell.
+export PATH="$HOME/.nvm/versions/node/v22.22.3/bin:$HOME/.local/bin:$PATH"
+
+# Load <repo>/.env so a bare `bash scripts/lane-tick.sh` (cron/CI, no pre-sourced env)
+# has LINEAR_API_KEY (and LANE_LANG) — linear.mjs reads them from process.env. `set -a`
+# exports every assignment; we restore the prior shell-opt afterwards. Missing .env is
+# fine (--dry-run needs no key); a real LIVE sweep without the key fails fast in createClient.
+if [ -f "$REPO_ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$REPO_ROOT/.env"
+  set +a
+fi
 
 # Deterministic core + live cutover. Under --dry-run, run.mjs derives and PRINTS the
 # composite plan with NO side effects (no Linear writes, no git). Live (no --dry-run),
-# run.mjs builds the board, decides, prints the plan, THEN dispatches it (lane/dispatch.mjs):
-# the station workers (claude -p), the validated posting (lane/post.mjs) and the idempotent
-# merge (lane/merge.mjs). The decision is always printed before any mutation.
+# run.mjs DRAINS: each iteration builds the board, decides, prints the plan, THEN dispatches
+# it (lane/dispatch.mjs) — the station workers (claude -p), the validated posting
+# (lane/post.mjs) and the idempotent merge (lane/merge.mjs) — and repeats WHILE the active
+# slot advances (drain loop), so understand → execution → review → merge chain in one tick.
+# The drain stops at idle, on an unchanged progress signature, or at DRAIN_CAP. Pre-triage/
+# reconcile run once (iteration 0) so PRETRIAGE_CAP=3 stays per-sweep. The decision is always
+# printed before any mutation.
 node "$REPO_ROOT/lane/run.mjs" "$@"
 
 # Live-cutover dispatch (lane/dispatch.mjs, invoked inside run.mjs's live path):
 #   - active (understand|execution|review|merge|idle): the WIP=1 In-Progress action.
 #       understand → /understand (## 🧭 Context Spec); execution → /execute (## 🔧 Work Log);
-#       review → /review (## 🔍 Review). merge: NO worker — idempotent esteira/<ID> →
+#       review → /review (## 🔍 Review). merge: NO worker — idempotent <ID> (branch) →
 #       production, then move To Review + set the green terminal stage:done (SKILL c2/e);
 #       a conflict is forward-only (logged, left for a human). idle: no-op.
 #   - pretriage(from:Todo):   /triage (## 🎯 Pre-Triage), post, THEN move Todo → Triage.

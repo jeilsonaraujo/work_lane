@@ -18,6 +18,40 @@ test('throws without an apiKey', () => {
   assert.throws(() => createClient({ apiKey: undefined, fetchImpl: makeFetch({}) }), /LINEAR_API_KEY/);
 });
 
+// Resilience: a transient `fetch failed` must be retried, not propagated (it used to
+// strand a ticket in an /execute loop). sleep is stubbed so the test stays instant.
+test('gql retries a transient fetch failure then succeeds', async () => {
+  let n = 0;
+  const fetchImpl = async () => {
+    n += 1;
+    if (n < 3) throw new TypeError('fetch failed');
+    return { ok: true, status: 200, json: async () => ({ data: { team: { states: { nodes: [] } } } }) };
+  };
+  const client = createClient({ apiKey: 'k', fetchImpl, sleep: async () => {} });
+  await client.resolveStatuses('team-1'); // should not throw
+  assert.equal(n, 3); // 2 failures + 1 success
+});
+
+test('gql gives up after exhausting retries (rethrows the last error)', async () => {
+  let n = 0;
+  const fetchImpl = async () => { n += 1; throw new TypeError('fetch failed'); };
+  const client = createClient({ apiKey: 'k', fetchImpl, retries: 2, sleep: async () => {} });
+  await assert.rejects(() => client.resolveStatuses('team-1'), /fetch failed/);
+  assert.equal(n, 3); // 1 initial + 2 retries
+});
+
+test('gql retries a 503 then succeeds', async () => {
+  let n = 0;
+  const fetchImpl = async () => {
+    n += 1;
+    if (n < 2) return { ok: false, status: 503, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ data: { team: { states: { nodes: [] } } } }) };
+  };
+  const client = createClient({ apiKey: 'k', fetchImpl, sleep: async () => {} });
+  await client.resolveStatuses('team-1');
+  assert.equal(n, 2);
+});
+
 test('sends the API key in the Authorization header (no Bearer prefix)', async () => {
   const fetchImpl = makeFetch({ data: { team: { states: { nodes: [] } } } });
   const client = createClient({ apiKey: 'lin_api_xyz', fetchImpl });
@@ -50,6 +84,30 @@ test('resolveLabels keeps only the stage group', async () => {
   const client = createClient({ apiKey: 'k', fetchImpl });
   const labels = await client.resolveLabels('team-1');
   assert.deepEqual(labels, { 'stage:understand': 'l-u', 'stage:blocked': 'l-b' });
+});
+
+test('resolveLabels normalizes BARE grouped children to canonical stage:<x> keys', async () => {
+  // The live board stores stage labels as bare children of the `stage` group (only
+  // stage:done carries the prefix). resolveLabels must map them to `stage:<x>` so the
+  // dispatcher's STATION labels (stage:understand, …) resolve — otherwise the stage
+  // mirror is never applied.
+  const fetchImpl = makeFetch({
+    data: { team: { labels: { nodes: [
+      { id: 'l-u', name: 'understand', parent: { id: 'g', name: 'stage' } },
+      { id: 'l-e', name: 'execution', parent: { id: 'g', name: 'stage' } },
+      { id: 'l-t', name: 'triage', parent: { id: 'g', name: 'stage' } },
+      { id: 'l-done', name: 'stage:done', parent: { id: 'g', name: 'stage' } },
+      { id: 'l-x', name: 'Bug', parent: null },
+    ] } } },
+  });
+  const client = createClient({ apiKey: 'k', fetchImpl });
+  const labels = await client.resolveLabels('team-1');
+  assert.deepEqual(labels, {
+    'stage:understand': 'l-u',
+    'stage:execution': 'l-e',
+    'stage:triage': 'l-t',
+    'stage:done': 'l-done',
+  });
 });
 
 test('resolveLabels resolves the green terminal stage:done by name (WLN-54)', async () => {

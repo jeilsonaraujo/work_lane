@@ -15,14 +15,25 @@
 // hydrate `hasPretriage` for the ordered/capped Todo candidates (the ones decide() may act
 // on this sweep); the rest keep it absent.
 
-import { derive } from './derive.mjs';
+import { derive, headerKind } from './derive.mjs';
 import { eligibleTodos, orderTodos, PRETRIAGE_CAP } from './decide.mjs';
 
-// Map a Linear comment { id, body, createdAt } to the projection derive() needs:
-// the header line is just the first non-empty line of the body.
-function projectArtifact(comment) {
+// Map a Linear comment { id, body, createdAt } to the projection derive() needs.
+// The artifact header is the first line that is a RECOGNISED station marker — a worker
+// may emit a prose preamble before it (e.g. "Producing the Context Spec.\n\n## 🧭 …"),
+// and validate.mjs accepts the artifact by `.includes()` (header anywhere), so the board
+// must read it back the same way. Taking the first non-empty line instead would make a
+// preambled-but-valid artifact invisible to derive(), looping the station forever. Fall
+// back to the first non-empty line so a genuinely malformed comment still surfaces
+// (unrecognised → filtered by derive) rather than vanishing.
+export function projectArtifact(comment) {
   const body = comment.body ?? '';
-  const header = (body.split('\n').find((l) => l.trim().length > 0) ?? '').trim();
+  const lines = body.split('\n');
+  const header = (
+    lines.find((l) => headerKind(l.trim()) !== null) ??
+    lines.find((l) => l.trim().length > 0) ??
+    ''
+  ).trim();
   return { header, body, createdAt: comment.createdAt };
 }
 

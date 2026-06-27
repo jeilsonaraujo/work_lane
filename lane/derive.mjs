@@ -36,7 +36,7 @@ export const HEADERS = {
 // Attempts cap: the number of REJECTED reviews that pushes a ticket to `blocked`.
 export const REJECTED_CAP = 3;
 
-function headerKind(header) {
+export function headerKind(header) {
   const h = (header ?? '').trim();
   if (h.startsWith(HEADERS.review)) return 'review';
   if (h.startsWith(HEADERS.worklog)) return 'worklog';
@@ -46,13 +46,26 @@ function headerKind(header) {
   return null;
 }
 
-// Non-empty Blockers = any text after the **Blockers:** marker (same line or the
-// lines that follow). Returns null when the marker is absent (→ malformed).
+// A leading "no blockers" sentinel: the agent wrote a prose `None …` / `N/A` / `-`
+// instead of leaving the field empty. Anchored at the start (after stripping leading
+// bullet/markdown chars) so a REAL blocker that merely mentions the word later still
+// counts. Covers en/pt phrasing.
+const NO_BLOCKERS_RE = /^(none|nenhuma?|n\/?a|nada|no\s+blockers?)\b/;
+
+// Non-empty Blockers = real text after the **Blockers:** marker. EMPTY, or a leading
+// none-sentinel (`None…`, `N/A`, a lone dash), counts as NO blockers — otherwise a
+// Context Spec that politely writes "Blockers: None that block implementation" would
+// false-positive the ticket into `blocked`. Returns null when the marker is absent
+// (→ malformed).
 function blockersNonEmpty(body) {
   const m = BLOCKERS_RE.exec(body ?? '');
   if (!m) return null;
   const rest = (body ?? '').slice(m.index + m[0].length).trim();
-  return rest.length > 0;
+  if (rest.length === 0) return false;
+  if (/^[–—-]+$/.test(rest)) return false; // a lone dash means "none"
+  const lead = rest.toLowerCase().replace(/^[\s:>*_-]+/, '');
+  if (NO_BLOCKERS_RE.test(lead)) return false;
+  return true;
 }
 
 export function derive(artifacts) {

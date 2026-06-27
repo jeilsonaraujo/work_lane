@@ -17,7 +17,7 @@ You are the **review** station worker. Parse the ticket id from `$ARGUMENTS`
    If recall errors or is empty, continue without the block.
 2. **Adopt the role** defined in `.claude/agents/reviewer.md` (read-only,
    independent evaluator — judge, never fix).
-3. Diff `git diff production...esteira/WLN-<ID>`, check each acceptance criterion,
+3. Diff `git diff production...WLN-<ID>`, check each acceptance criterion,
    and run the tests yourself.
 4. **Print ONLY the `## 🔍 Review` artifact to stdout.** It MUST contain exactly
    one `**Verdict:** APPROVED|REJECTED` line. The driver validates it

@@ -10,9 +10,11 @@
 
 export const ENDPOINT = 'https://api.linear.app/graphql';
 
-// The `stage` label group name (CLAUDE.md). Stage labels are its children and are
-// named `stage:understand` / `stage:execution` / `stage:review` / `stage:blocked` /
-// `stage:done` (green terminal label set on integration → To Review).
+// The `stage` label group name (CLAUDE.md). On the live board the stage labels are
+// stored as BARE grouped children (`understand` / `execution` / `review` / `triage` /
+// `blocked`, each with parent group `stage`) — only `stage:done` carries the literal
+// prefix. resolveLabels NORMALIZES both forms to the canonical `stage:<x>` keys the rest
+// of the code/CLAUDE.md contract expects, so consumers always use `stage:understand` etc.
 export const STAGE_GROUP = 'stage';
 
 // The green terminal label set when an APPROVED ticket is integrated and moved to
@@ -25,25 +27,53 @@ export function createClient({
   apiKey = process.env.LINEAR_API_KEY,
   fetchImpl = globalThis.fetch,
   endpoint = ENDPOINT,
+  // Resilience: a transient `fetch failed` (DNS/connection blip) or a 429/5xx must NOT
+  // discard a station artifact — that used to strand a ticket in an `/execute` loop, the
+  // executor re-implementing every tick until a post happened to succeed. Retry with
+  // exponential backoff; 0 retries (`retries:0`) restores the old fail-fast behavior.
+  retries = 3,
+  backoffMs = 250,
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
 } = {}) {
   if (!apiKey) throw new Error('LINEAR_API_KEY is required');
   if (typeof fetchImpl !== 'function') throw new Error('no fetch implementation available');
 
+  // A response is worth retrying on a 429 (rate limit) or any 5xx (server-side).
+  const retriable = (status) => status === 429 || (status >= 500 && status <= 599);
+
   async function gql(query, variables = {}) {
-    const res = await fetchImpl(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: apiKey,
-      },
-      body: JSON.stringify({ query, variables }),
-    });
-    if (!res.ok) throw new Error(`Linear HTTP ${res.status}`);
-    const json = await res.json();
-    if (json.errors) {
-      throw new Error(`Linear GraphQL: ${json.errors.map((e) => e.message).join('; ')}`);
+    let lastErr;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      if (attempt > 0) await sleep(backoffMs * 2 ** (attempt - 1));
+      let res;
+      try {
+        res = await fetchImpl(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: apiKey,
+          },
+          body: JSON.stringify({ query, variables }),
+        });
+      } catch (e) {
+        // Network-level failure (e.g. "fetch failed") — retry until exhausted.
+        lastErr = e;
+        continue;
+      }
+      if (!res.ok) {
+        if (retriable(res.status) && attempt < retries) {
+          lastErr = new Error(`Linear HTTP ${res.status}`);
+          continue;
+        }
+        throw new Error(`Linear HTTP ${res.status}`);
+      }
+      const json = await res.json();
+      if (json.errors) {
+        throw new Error(`Linear GraphQL: ${json.errors.map((e) => e.message).join('; ')}`);
+      }
+      return json.data;
     }
-    return json.data;
+    throw lastErr;
   }
 
   // team.states → { name: id }
@@ -65,8 +95,15 @@ export function createClient({
     );
     const out = {};
     for (const l of data.team.labels.nodes) {
-      const inGroup = (l.parent && l.parent.name === STAGE_GROUP) || l.name.startsWith(`${STAGE_GROUP}:`);
-      if (inGroup) out[l.name] = l.id;
+      const grouped = Boolean(l.parent && l.parent.name === STAGE_GROUP);
+      const prefixed = l.name.startsWith(`${STAGE_GROUP}:`);
+      if (!grouped && !prefixed) continue;
+      // Normalize to the canonical `stage:<x>` key whether the Linear label is a bare
+      // grouped child (`understand`, parent "stage") or already prefixed (`stage:done`).
+      // Without this a bare child resolves under the wrong key and the stage:* mirror is
+      // never applied (the ticket sits with no stage label).
+      const key = prefixed ? l.name : `${STAGE_GROUP}:${l.name}`;
+      out[key] = l.id;
     }
     return out;
   }
