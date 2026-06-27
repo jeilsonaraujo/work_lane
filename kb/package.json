@@ -1,0 +1,17 @@
+{
+  "name": "worklane-kb",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Base de conhecimento (memória vetorial) da esteira v3: sqlite-vec + embeddings local-first (transformers.js), com provider injetável. Standalone, sem serviço.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "sqlite-vec": "^0.1.6"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^3.3.3"
+  }
+}

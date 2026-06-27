@@ -1,0 +1,12 @@
+# Base de conhecimento (memória vetorial) — local, nunca versionada
+kb.db
+kb/*.db
+*.db
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Modelos de embedding baixados (transformers.js cache)
+.cache/
+.transformers-cache/
