@@ -1,3 +1,10 @@
+# Target project repositories — local-only, NEVER versioned. The lane is
+# project-agnostic: the repos the agents operate on live under repos/ (clones or
+# symlinks), but no project content is ever committed into the lane. Only the
+# .gitkeep placeholder is tracked, so the reserved location exists on a fresh clone.
+repos/*
+!repos/.gitkeep
+
 # Knowledge base (vector memory) — local, never versioned
 kb.db
 kb/*.db

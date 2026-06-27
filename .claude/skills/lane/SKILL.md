@@ -289,6 +289,9 @@ once before any post.
       - **execution** → `executor` (`isolation: "worktree"`). Pass ticket + Spec.
         The isolation worktree inherits the **local HEAD of `production`** via
         `worktree.baseRef: "head"` (config in `.claude/settings.json`; see CLAUDE.md).
+        **Branch policy (mandatory):** the executor's `<TICKET-ID>` branch is **always** cut
+        from the integration trunk `production` (or `main` where that is the target repo's
+        trunk) — **never** from an in-progress feature branch (see CLAUDE.md → Branch policy).
         **Validate (d.0.6)** the `## 🔧 Work Log`; if it passes, post (`save_comment`) and then
         **Ingest** (`d.1`) with `--stage execution --kind worklog`.
       - **review** → `reviewer`. Pass ticket + Spec + Work Log. **Validate (d.0.6)** the

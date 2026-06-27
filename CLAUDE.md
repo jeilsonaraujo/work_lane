@@ -7,6 +7,15 @@ design the system (the lane) that does it for you.
 **Linear is the board / source of truth.** A local vector knowledge base (`kb/`) gives the
 agents context and memory. No service of your own to deploy.
 
+**Project-agnostic (hard rule).** The lane repo contains ONLY the lane itself — its driver,
+agents, KB, and docs about the lane. **No project content is ever committed here.** The
+repositories the agents operate on live under **`repos/`** (clones or symlinks), whose contents
+are gitignored (only `repos/.gitkeep` is tracked, so the reserved location exists on a fresh
+clone). Per-ticket outputs (research, RCAs, plans, work logs) are **not** committed to the lane
+either — they live as Linear comments (the artifacts) and in the `kb/` vector memory. If you
+catch project-specific files inside the lane repo, that's a bug: move them to the project's repo
+or to Linear/KB.
+
 ## How it works
 
 - **Board**: project **Auto Lane** in Linear (team `Lane`/`DIM`). Identify it **by ID** —
@@ -77,11 +86,22 @@ and the **result** (exit).
 > `In Progress` deriving `understand` runs the `understand` station.
 
 Attempts = number of `## 🔍 Review` REJECTED comments. Limit: 3 → `blocked`.
-**Branch base for review/merge: `production`.** The executor commits on `<TICKET-ID>`.
-The executor's isolation worktree branches from the **local HEAD of `production`** via
-`worktree.baseRef: "head"` in `.claude/settings.json` (the key only accepts `"fresh"` or
-`"head"`). Reason: there is no resolvable `origin/HEAD` and the integrated code lives only in
-the local `production` — the default `"fresh"` would lose the already-merged tickets.
+
+**Branch policy (MANDATORY — applies to every branch the lane creates, in this repo or in
+any target repo under `repos/`):** a new branch is **always** cut from the integration
+**trunk** — `production` (the lane's trunk; use `main` where the target repo's trunk is
+`main`) — and **NEVER** from another feature/in-progress branch nor from whatever branch
+happens to be checked out. Branching off an in-progress branch would inherit its uncommitted
+ticket and is forbidden. There is exactly one base for new work: the trunk.
+
+**Branch base for review/merge: `production`.** The executor commits on `<TICKET-ID>`, a
+branch cut **from `production`** (per the Branch policy above). The executor's isolation
+worktree branches from the **local HEAD of `production`** via `worktree.baseRef: "head"` in
+`.claude/settings.json` (the key only accepts `"fresh"` or `"head"`; the lane always runs with
+`production` checked out, so `head` == the trunk). Reason: there is no resolvable `origin/HEAD`
+and the integrated code lives only in the local `production` — the default `"fresh"` would lose
+the already-merged tickets. The code driver enforces the same base explicitly:
+`lane/dispatch.mjs::ensureExecWorktree` does `git worktree add … -b <ID> production`.
 
 | Event | Lane action |
 |---|---|

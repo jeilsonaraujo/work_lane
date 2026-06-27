@@ -36,6 +36,16 @@ The orchestrator is the `/lane` skill (`.claude/skills/lane/SKILL.md`). One invo
 one sweep of the board; a loop wrapper turns it into a heartbeat. See `CLAUDE.md` for the full
 state machine.
 
+**Project-agnostic.** The lane repo holds only the lane. The repositories the agents work on
+live under **`repos/`** (clone or symlink them in) — its contents are gitignored, so no project
+code is ever committed into the lane. Per-ticket outputs live in Linear (the artifact comments)
+and in the `kb/` vector memory, never as committed files here.
+
+**Branch policy (mandatory).** Every new branch — the executor's `<TICKET-ID>` branches and any
+branch you cut by hand — is created from the integration **trunk** (`production`, or `main` where
+that is the trunk), **never** from an in-progress feature branch. See `CLAUDE.md → Branch
+policy`.
+
 ## Requirements
 
 - **Node.js** — the repo pins the Node version via the root `.nvmrc` (`22.22.3`); run
@@ -145,7 +155,7 @@ unit-tested modules and talks to Linear over its **GraphQL API** — **no MCP at
   `move-to-triage` reconciles; `Triage` is a pure signal; ordering: epic-continuity → priority →
   number).
 - **Thin I/O:** `lane/linear.mjs` (GraphQL client over global `fetch`, `LINEAR_API_KEY` from
-  env), `lane/merge.mjs` (idempotent `esteira/<ID>` → `production` merge; a conflict returns a
+  env), `lane/merge.mjs` (idempotent `<ID>` → `production` merge; a conflict returns a
   blocked signal, never auto-resolved), `lane/board.mjs` / `lane/post.mjs` (glue).
 - **Runner:** `scripts/lane-tick.sh` is a `flock -n` single-instance wrapper that invokes the
   sweep (`node lane/run.mjs`) and dispatches the station workers in `.claude/commands/`
@@ -200,6 +210,9 @@ cd kb && npm rebuild better-sqlite3
 ## Project layout
 
 ```
+repos/                    Reserved, gitignored mount point for the TARGET project repos the
+                          agents operate on (clones or symlinks). Only repos/.gitkeep is
+                          tracked — no project content is ever committed into the lane.
 kb/                       Local vector knowledge base (the agents' memory)
   seed.mjs                  Build/populate kb.db from the repo docs
   recall.mjs                Query the KB (READ) → "## 📚 Relevant memory" block
@@ -214,7 +227,7 @@ lane/                     Opt-in code driver: pure derive/validate/decide + Line
   validate.mjs              Pre-post format gate (PURE)
   decide.mjs                Composite plan: WIP=1 active slot + cap-3 in-place pre-triage + reconcile (PURE)
   linear.mjs                GraphQL client (global fetch, injectable)
-  merge.mjs                 Idempotent esteira/<ID> → production merge
+  merge.mjs                 Idempotent <ID> → production merge
   run.mjs                   Sweep entrypoint (--dry-run prints the action, no side effects)
 scripts/lane-tick.sh      flock single-instance runner for the code driver
 CLAUDE.md                 Full project contract (state machine, handoffs, board IDs)
